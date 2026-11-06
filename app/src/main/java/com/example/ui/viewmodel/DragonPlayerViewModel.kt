@@ -13,16 +13,21 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import com.example.player.DragonStreamPlaylistHelper
+import com.example.player.DragonStreamPlaylistHelper.toVideoEntity
 import com.example.data.local.DragonDatabase
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.StreamBookmarkEntity
@@ -100,6 +105,7 @@ data class PlayerRuntimeState(
     val activeSubtitleCue: String? = null,
     val isInPipMode: Boolean = false,
     val activePlaylistQueue: List<VideoEntity> = emptyList(),
+    val streamPlaylist: List<VideoEntity> = emptyList(),
     val playerErrorText: String? = null
 )
 
@@ -408,10 +414,15 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _playerState.update {
-                    it.copy(
-                        playerErrorText = "Decoder fallback active (${error.errorCodeName}) — Switching to software renderer"
-                    )
+                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    exoPlayer.seekToDefaultPosition()
+                    exoPlayer.prepare()
+                } else {
+                    _playerState.update {
+                        it.copy(
+                            playerErrorText = "Playback notice (${error.errorCodeName}): ${error.message ?: "Reconnecting"}"
+                        )
+                    }
                 }
             }
         })
@@ -528,7 +539,8 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             .setEnableDecoderFallback(true)
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(12_000, 45_000, 1_200, 2_500)
+            .setBufferDurationsMs(15_000, 50_000, 1_500, 3_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         val audioAttributes = AudioAttributes.Builder()
@@ -536,8 +548,27 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
 
+        // Robust HTTP DataSource with realistic User-Agent, redirects, and custom headers
+        // so online live streams and IPTV servers don't return 403 Forbidden or redirect errors!
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(DragonStreamPlaylistHelper.STREAM_USER_AGENT)
+            .setConnectTimeoutMs(18_000)
+            .setReadTimeoutMs(25_000)
+            .setAllowCrossProtocolRedirects(true)
+            .setKeepPostFor302Redirects(true)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Accept" to "*/*",
+                    "Accept-Encoding" to "gzip, deflate",
+                    "Connection" to "keep-alive"
+                )
+            )
+
+        val upstreamDataSourceFactory = DefaultDataSource.Factory(app, httpDataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(upstreamDataSourceFactory, extractorsFactory)
+
         return ExoPlayer.Builder(app, renderersFactory)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(app, extractorsFactory))
+            .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
@@ -683,6 +714,13 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
 
         val deviceBrightness = readDeviceBrightnessFraction(getApplication())
 
+        val effectiveStreamPlaylist = when {
+            queue.isNotEmpty() && queue.all { it.isNetworkStream } -> queue
+            _playerState.value.streamPlaylist.any { it.id == video.id || it.uri == video.uri } -> _playerState.value.streamPlaylist
+            video.isNetworkStream -> listOf(video)
+            else -> emptyList()
+        }
+
         _playerState.update {
             it.copy(
                 activeVideo = video.copy(lastPositionMs = resumePos),
@@ -690,6 +728,7 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 currentPositionMs = resumePos,
                 durationMs = video.durationMs.coerceAtLeast(1L),
                 activePlaylistQueue = effectiveQueue,
+                streamPlaylist = effectiveStreamPlaylist,
                 playerErrorText = null,
                 zoomScale = 1f,
                 panOffsetX = 0f,
@@ -699,8 +738,42 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             )
         }
 
+        // For online streams, auto-scan in background if playlist has not been populated with channels/variants yet
+        if (video.isNetworkStream && effectiveStreamPlaylist.size <= 1 && (video.uri.startsWith("http://", ignoreCase = true) || video.uri.startsWith("https://", ignoreCase = true))) {
+            viewModelScope.launch {
+                val remoteParsed = DragonStreamPlaylistHelper.fetchAndParseRemoteM3u(video.uri, video.title)
+                if (remoteParsed.size > 1) {
+                    val remoteEntities = remoteParsed.mapIndexed { idx, item ->
+                        item.toVideoEntity(id = System.currentTimeMillis() + 1000L + idx)
+                    }
+                    _playerState.update { state ->
+                        state.copy(
+                            streamPlaylist = remoteEntities,
+                            activePlaylistQueue = remoteEntities
+                        )
+                    }
+                    showBannerMessage("Stream playlist loaded: ${remoteEntities.size} channels found")
+                }
+            }
+        }
+
         try {
-            val mediaItem = MediaItem.Builder()
+            val uriStr = video.uri.lowercase()
+            val proto = video.streamProtocol.uppercase()
+            val isHls = uriStr.contains(".m3u8") || uriStr.contains("m3u8") || proto.contains("HLS") || proto.contains("M3U")
+            val isDash = uriStr.contains(".mpd") || proto.contains("DASH")
+            val isSs = uriStr.contains(".ism") || proto.contains("SMOOTH")
+            val isRtsp = uriStr.startsWith("rtsp://") || proto.contains("RTSP")
+
+            val mimeType = when {
+                isHls -> MimeTypes.APPLICATION_M3U8
+                isDash -> MimeTypes.APPLICATION_MPD
+                isSs -> MimeTypes.APPLICATION_SS
+                isRtsp -> MimeTypes.APPLICATION_RTSP
+                else -> null
+            }
+
+            val mediaItemBuilder = MediaItem.Builder()
                 .setUri(Uri.parse(video.uri))
                 .setMediaId(video.id.toString())
                 .setMediaMetadata(
@@ -709,7 +782,22 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                         .setSubtitle("${video.containerFormat} • ${video.videoCodec}")
                         .build()
                 )
-                .build()
+
+            if (mimeType != null) {
+                mediaItemBuilder.setMimeType(mimeType)
+            }
+
+            if (video.isNetworkStream) {
+                mediaItemBuilder.setLiveConfiguration(
+                    MediaItem.LiveConfiguration.Builder()
+                        .setMaxPlaybackSpeed(1.02f)
+                        .setMinPlaybackSpeed(0.98f)
+                        .setTargetOffsetMs(3000L)
+                        .build()
+                )
+            }
+
+            val mediaItem = mediaItemBuilder.build()
 
             exoPlayer.setMediaItem(mediaItem, resumePos)
             applyLoopModeToExoPlayer(_playerState.value.loopMode, effectiveQueue.size)
@@ -719,7 +807,7 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             audioProcessor.attachToPlayer(exoPlayer, audioConfig.value)
         } catch (e: Exception) {
             _playerState.update {
-                it.copy(playerErrorText = "Loaded in software container mode (${e.localizedMessage ?: "ready"})")
+                it.copy(playerErrorText = "Streaming error (${e.localizedMessage ?: "ready"})")
             }
         }
 
@@ -1044,10 +1132,11 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         val state = _playerState.value
         val current = state.activeVideo ?: return
         val wasOverlayClosed = !state.isPlayerOverlayOpen && keepInBackgroundIfClosed
-        val queue = state.activePlaylistQueue
+        val queue = if (state.streamPlaylist.size > 1) state.streamPlaylist else state.activePlaylistQueue
         if (queue.size <= 1) return
-        val idx = queue.indexOfFirst { it.id == current.id }
-        val nextVideo = queue[(idx + 1).coerceAtLeast(0) % queue.size]
+        val idx = queue.indexOfFirst { it.id == current.id || it.uri == current.uri }
+        val nextIdx = if (idx >= 0) (idx + 1) % queue.size else 0
+        val nextVideo = queue[nextIdx]
         playVideo(nextVideo, queue, startFromBeginning = true)
         if (wasOverlayClosed) {
             _playerState.update { it.copy(isPlayerOverlayOpen = false) }
@@ -1059,12 +1148,12 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         val state = _playerState.value
         val current = state.activeVideo ?: return
         val wasOverlayClosed = !state.isPlayerOverlayOpen && keepInBackgroundIfClosed
-        val queue = state.activePlaylistQueue
+        val queue = if (state.streamPlaylist.size > 1) state.streamPlaylist else state.activePlaylistQueue
         if (queue.size <= 1) {
             seekToPosition(0L)
             return
         }
-        val idx = queue.indexOfFirst { it.id == current.id }
+        val idx = queue.indexOfFirst { it.id == current.id || it.uri == current.uri }
         val prevIdx = if (idx <= 0) queue.lastIndex else idx - 1
         playVideo(queue[prevIdx], queue, startFromBeginning = true)
         if (wasOverlayClosed) {
@@ -1198,15 +1287,37 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun addAndPlayNetworkStream(title: String, url: String, protocol: String) {
-        val cleanUrl = url.trim()
-        if (cleanUrl.isEmpty()) return
+        val cleanInput = url.trim()
+        if (cleanInput.isEmpty()) return
         val effectiveTitle = title.trim().ifEmpty {
             "Network Stream (${protocol.uppercase()})"
         }
+
+        // 1. Direct multi-link or pasted M3U text detection
+        val directParsed = DragonStreamPlaylistHelper.parseM3uOrMultipleUrls(
+            content = cleanInput,
+            baseUrl = null,
+            defaultTitle = effectiveTitle
+        )
+
+        if (directParsed.size > 1) {
+            val entities = directParsed.mapIndexed { idx, item ->
+                item.toVideoEntity(id = System.currentTimeMillis() + idx)
+            }
+            _playerState.update { it.copy(streamPlaylist = entities) }
+            viewModelScope.launch {
+                entities.forEach { repository.insertOrUpdateVideo(it) }
+            }
+            showBannerMessage("Loaded playlist with ${entities.size} stream channels")
+            playVideo(entities.first(), entities)
+            return
+        }
+
+        // 2. Single URL provided (e.g. online HLS/M3U8 or stream link)
         viewModelScope.launch {
             val entity = VideoEntity(
                 title = effectiveTitle,
-                uri = cleanUrl,
+                uri = cleanInput,
                 folderName = "Network Streams",
                 durationMs = 1800_000L,
                 sizeBytes = 0L,
@@ -1222,8 +1333,63 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 streamProtocol = protocol.uppercase()
             )
             val id = repository.insertOrUpdateVideo(entity)
-            playVideo(entity.copy(id = id))
+            val savedEntity = entity.copy(id = id)
+
+            _playerState.update { it.copy(streamPlaylist = listOf(savedEntity)) }
+            playVideo(savedEntity, listOf(savedEntity))
+
+            // 3. Asynchronously inspect remote .m3u / .m3u8 link or adaptive streams for multiple channels or variants
+            if (cleanInput.startsWith("http://", ignoreCase = true) || cleanInput.startsWith("https://", ignoreCase = true)) {
+                val remoteParsed = DragonStreamPlaylistHelper.fetchAndParseRemoteM3u(cleanInput, effectiveTitle)
+                if (remoteParsed.size > 1) {
+                    val remoteEntities = remoteParsed.mapIndexed { idx, item ->
+                        item.toVideoEntity(id = System.currentTimeMillis() + 1000L + idx)
+                    }
+                    _playerState.update { state ->
+                        state.copy(
+                            streamPlaylist = remoteEntities,
+                            activePlaylistQueue = remoteEntities
+                        )
+                    }
+                    showBannerMessage("Stream playlist ready: ${remoteEntities.size} channels found")
+                }
+            }
         }
+    }
+
+    fun rescanActiveStreamPlaylist() {
+        val currentVideo = _playerState.value.activeVideo ?: return
+        if (!currentVideo.isNetworkStream) return
+        showBannerMessage("Scanning stream links & variants…")
+        viewModelScope.launch {
+            val remoteParsed = DragonStreamPlaylistHelper.fetchAndParseRemoteM3u(currentVideo.uri, currentVideo.title)
+            if (remoteParsed.size > 1) {
+                val remoteEntities = remoteParsed.mapIndexed { idx, item ->
+                    item.toVideoEntity(id = System.currentTimeMillis() + 1000L + idx)
+                }
+                _playerState.update { state ->
+                    state.copy(
+                        streamPlaylist = remoteEntities,
+                        activePlaylistQueue = remoteEntities
+                    )
+                }
+                showBannerMessage("Playlist updated: ${remoteEntities.size} channels found")
+            } else if (remoteParsed.size == 1) {
+                val singleEntity = remoteParsed.first().toVideoEntity(currentVideo.id)
+                _playerState.update { state ->
+                    state.copy(streamPlaylist = listOf(singleEntity))
+                }
+                showBannerMessage("1 active stream channel verified")
+            } else {
+                showBannerMessage("No multiple streams detected in this link")
+            }
+        }
+    }
+
+    fun switchStreamFromPlaylist(selectedStream: VideoEntity) {
+        val currentPlaylist = _playerState.value.streamPlaylist.ifEmpty { _playerState.value.activePlaylistQueue }
+        playVideo(selectedStream, currentPlaylist)
+        showBannerMessage("Switched to stream: ${selectedStream.title}")
     }
 
     fun resetRecentNetworkStreams() {

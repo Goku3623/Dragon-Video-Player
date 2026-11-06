@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -65,6 +66,7 @@ import com.example.data.local.StreamBookmarkEntity
 import com.example.data.local.VideoEntity
 import com.example.domain.model.CodecCapabilitySpec
 import com.example.domain.model.DecoderMode
+import com.example.player.DragonStreamPlaylistHelper
 import com.example.player.StorageScannerHelper
 import com.example.ui.theme.dragonGlassSurface
 import com.example.ui.theme.dragonScaleMesh
@@ -405,13 +407,48 @@ fun NetworkStreamScreenContent(
                 OutlinedTextField(
                     value = customUrl,
                     onValueChange = { customUrl = it },
-                    label = { Text("Stream URL (.m3u8, .mpd, rtsp://, https://)") },
-                    placeholder = { Text("https://example.com/live/master.m3u8") },
-                    singleLine = true,
+                    label = { Text("Stream URL or M3U Playlist (.m3u8, .mpd, rtsp://)") },
+                    placeholder = { Text("https://example.com/live/master.m3u8 or paste M3U channels / multi-links") },
+                    singleLine = false,
+                    maxLines = 4,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("stream_url_input")
                 )
+
+                val detectedPlaylistCount = remember(customUrl) {
+                    if (customUrl.contains("\n") || customUrl.contains("#EXT")) {
+                        DragonStreamPlaylistHelper.parseM3uOrMultipleUrls(customUrl).size
+                    } else 0
+                }
+
+                if (detectedPlaylistCount > 1) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = scheme.primary.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, scheme.primary.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                contentDescription = null,
+                                tint = scheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Detected Multi-Stream Playlist ($detectedPlaylistCount channels / links)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = scheme.primary
+                            )
+                        }
+                    }
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

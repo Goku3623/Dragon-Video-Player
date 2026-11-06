@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -25,11 +27,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -38,6 +43,7 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
@@ -45,6 +51,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Replay10
@@ -54,12 +61,15 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -79,6 +89,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -133,13 +144,33 @@ fun DragonPlayerHudOverlay(
     onOpenAudioStudio: () -> Unit,
     onDeleteVideoToTrash: () -> Unit,
     onToggleHudLock: () -> Unit,
+    streamPlaylist: List<VideoEntity> = emptyList(),
+    onSelectStreamFromPlaylist: (VideoEntity) -> Unit = {},
+    onRefreshStreamPlaylist: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var showThreeDotMenuDialog by remember { mutableStateOf(false) }
     var showLoopOptionsPopup by remember { mutableStateOf(false) }
+    var showStreamPlaylistDialog by remember { mutableStateOf(false) }
     val scheme = MaterialTheme.colorScheme
 
     Box(modifier = modifier.fillMaxSize()) {
+        // Upper Left Side: Stream Playlist Icon Button (shown when streaming link or stream playlist is active)
+        AnimatedVisibility(
+            visible = isHudVisible && !isHudLocked && (streamPlaylist.isNotEmpty() || video.isNetworkStream),
+            enter = fadeIn() + slideInVertically { -it / 2 },
+            exit = fadeOut() + slideOutVertically { -it / 2 },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(top = 12.dp, start = 16.dp)
+        ) {
+            val count = if (streamPlaylist.isNotEmpty()) streamPlaylist.size else 1
+            FloatingPlaylistIconChip(
+                playlistCount = count,
+                onClick = { showStreamPlaylistDialog = true }
+            )
+        }
         // When HUD is locked: show only the floating Lock icon at the upper side
         AnimatedVisibility(
             visible = isHudVisible && isHudLocked,
@@ -558,6 +589,21 @@ fun DragonPlayerHudOverlay(
                 onClosePlayer()
             },
             onDismiss = { showThreeDotMenuDialog = false }
+        )
+    }
+
+    // Stream Playlist Dialog (Renders whenever upper-left Playlist button is clicked, independent of 3-dot menu!)
+    if (showStreamPlaylistDialog) {
+        val effectiveList = if (streamPlaylist.isNotEmpty()) streamPlaylist else listOf(video)
+        StreamPlaylistSelectorDialog(
+            currentVideo = video,
+            playlist = effectiveList,
+            onSelectStream = { stream ->
+                showStreamPlaylistDialog = false
+                onSelectStreamFromPlaylist(stream)
+            },
+            onRefreshPlaylist = onRefreshStreamPlaylist,
+            onDismiss = { showStreamPlaylistDialog = false }
         )
     }
 }
@@ -1068,6 +1114,333 @@ private fun ThreeDotMenuRowItem(
                     .padding(horizontal = 7.dp, vertical = 3.dp)
             ) {
                 Text(badge, style = MaterialTheme.typography.labelSmall, color = scheme.primary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FloatingPlaylistIconChip(
+    playlistCount: Int,
+    onClick: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(22.dp),
+        color = Color.Black.copy(alpha = 0.70f),
+        border = BorderStroke(1.2.dp, scheme.primary.copy(alpha = 0.85f)),
+        modifier = Modifier
+            .dragonGlassSurface(cornerRadiusOverride = 22.dp, elevated = true, accentGlow = true)
+            .testTag("stream_playlist_upper_left_button")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
+                contentDescription = "Stream Playlist",
+                tint = scheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = "Playlist ($playlistCount)",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+fun StreamPlaylistSelectorDialog(
+    currentVideo: VideoEntity,
+    playlist: List<VideoEntity>,
+    onSelectStream: (VideoEntity) -> Unit,
+    onRefreshPlaylist: (() -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredList = remember(playlist, searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        if (q.isEmpty()) playlist
+        else playlist.filter {
+            it.title.lowercase().contains(q) ||
+            it.folderName.lowercase().contains(q) ||
+            it.containerFormat.lowercase().contains(q) ||
+            it.uri.lowercase().contains(q)
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .dragonGlassSurface(cornerRadiusOverride = 22.dp, elevated = true, accentGlow = true)
+                .padding(18.dp)
+                .testTag("stream_playlist_selector_dialog"),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(scheme.primary.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
+                            contentDescription = null,
+                            tint = scheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Stream Playlist",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (playlist.size > 1) "${playlist.size} streams available • Tap to switch" else "Active streaming link",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (onRefreshPlaylist != null) {
+                        IconButton(
+                            onClick = onRefreshPlaylist,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("refresh_stream_playlist_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Rescan / Refresh Streams",
+                                tint = scheme.primary,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close Playlist", tint = Color.White)
+                    }
+                }
+            }
+
+            // Notice if only 1 stream is found (gives the user an immediate action to rescan remote M3U)
+            if (playlist.size <= 1 && onRefreshPlaylist != null) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = scheme.primary.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, scheme.primary.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LiveTv,
+                            contentDescription = null,
+                            tint = scheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Tap refresh to scan for .m3u8 channels & variants",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            onClick = onRefreshPlaylist,
+                            shape = RoundedCornerShape(6.dp),
+                            color = scheme.primary,
+                            modifier = Modifier.testTag("rescan_stream_quick_button")
+                        ) {
+                            Text(
+                                text = "Scan",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Black,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Quick Search if > 3 streams
+            if (playlist.size > 3) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Filter channels / streams…", style = MaterialTheme.typography.bodySmall) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = scheme.primary,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
+                        focusedContainerColor = scheme.surface.copy(alpha = 0.7f),
+                        unfocusedContainerColor = scheme.surface.copy(alpha = 0.5f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("stream_playlist_search_input")
+                )
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+
+            // Scrollable List of Stream Items
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (filteredList.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.LiveTv,
+                                contentDescription = null,
+                                tint = scheme.primary.copy(alpha = 0.6f),
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Text(
+                                text = if (searchQuery.isNotBlank()) "No streams match '$searchQuery'" else "No streams available",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White,
+                                fontWeight = FontWeight.Medium
+                            )
+                            if (onRefreshPlaylist != null) {
+                                Button(
+                                    onClick = onRefreshPlaylist,
+                                    modifier = Modifier.testTag("rescan_stream_playlist_empty_button")
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Rescan Streams")
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(filteredList) { item ->
+                        val isCurrent = item.id == currentVideo.id || item.uri == currentVideo.uri
+                        Surface(
+                            onClick = { onSelectStream(item) },
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (isCurrent) scheme.primary.copy(alpha = 0.20f) else Color.White.copy(alpha = 0.05f),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isCurrent) scheme.primary else Color.White.copy(alpha = 0.10f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("stream_playlist_item_${item.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isCurrent) scheme.primary else scheme.surfaceVariant),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isCurrent) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Currently Playing",
+                                            tint = Color.Black,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.LiveTv,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = item.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isCurrent) scheme.primary else Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+                                        if (isCurrent) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = scheme.primary
+                                            ) {
+                                                Text(
+                                                    text = "ACTIVE",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.Black,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        text = item.containerFormat.ifBlank { "HLS" } + if (item.folderName != "Stream Playlist") " • ${item.folderName}" else "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = scheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -14,7 +14,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class ExampleRobolectricTest {
 
     @Test
@@ -59,5 +59,25 @@ class ExampleRobolectricTest {
             customAccentHue = 140f
         )
         assertTrue(customConfig.activePrimary != DragonThemePreset.ABYSSAL_DRAKE.primaryAccent)
+    }
+
+    @Test
+    fun `parse m3u playlist channels and variant qualities`() {
+        val sampleM3u = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="Dragon1" group-title="Sports",Dragon Sports HD
+            https://example.com/live/sports.m3u8
+            #EXTINF:-1 tvg-id="Dragon2" group-title="Cinema",Dragon Movies 4K
+            https://example.com/live/movies.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=1920x1080,NAME="1080p FHD"
+            https://example.com/live/1080p.m3u8
+        """.trimIndent()
+
+        val parsed = com.example.player.DragonStreamPlaylistHelper.parseM3uOrMultipleUrls(sampleM3u)
+        assertEquals(3, parsed.size)
+        assertEquals("Dragon Sports HD", parsed[0].title)
+        assertEquals("Sports", parsed[0].group)
+        assertEquals("Dragon Movies 4K", parsed[1].title)
+        assertEquals("1080p FHD", parsed[2].title)
     }
 }

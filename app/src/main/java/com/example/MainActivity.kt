@@ -529,6 +529,15 @@ fun DragonVideoPlayerRoot(
                             viewModel.toggleHudLock()
                             isHudVisible = true
                             hudInteractionTick++
+                        },
+                        streamPlaylist = playerState.streamPlaylist,
+                        onSelectStreamFromPlaylist = { stream ->
+                            viewModel.switchStreamFromPlaylist(stream)
+                            hudInteractionTick++
+                        },
+                        onRefreshStreamPlaylist = {
+                            viewModel.rescanActiveStreamPlaylist()
+                            hudInteractionTick++
                         }
                     )
                 }

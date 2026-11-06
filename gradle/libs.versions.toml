@@ -105,6 +105,7 @@ androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.re
 androidx-media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 androidx-media3-decoder = { group = "androidx.media3", name = "media3-decoder", version.ref = "media3" }
+androidx-media3-datasource = { group = "androidx.media3", name = "media3-datasource", version.ref = "media3" }
 androidx-media3-extractor = { group = "androidx.media3", name = "media3-extractor", version.ref = "media3" }
 androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
 
