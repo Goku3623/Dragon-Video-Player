@@ -1,0 +1,6 @@
+{
+  "name": "Dragon Video Player",
+  "description": "High-performance 4K/8K Android media player with Jetpack Media3, MX/VLC gesture controls, dynamic dragon glassmorphism themes, subtitle & audio studio, and vault explorer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

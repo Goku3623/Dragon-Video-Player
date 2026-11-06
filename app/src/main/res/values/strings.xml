@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Dragon Video Player</string>
+    <string name="nav_library">Library</string>
+    <string name="nav_folders">Folders</string>
+    <string name="nav_playlists">Playlists</string>
+    <string name="nav_streams">Streams &amp; Codecs</string>
+    <string name="nav_theme">Theme Studio</string>
+    <string name="nav_vault">Dragon Vault</string>
+    <string name="search_hint">Search videos, codecs, folders…</string>
+    <string name="scan_storage">Scan Storage</string>
+    <string name="pick_video">Open Video File</string>
+    <string name="open_network_stream">Play Network Stream</string>
+    <string name="pip_description">Enter Picture-in-Picture mode</string>
+    <string name="screenshot_saved">High-res frame captured to gallery</string>
+    <string name="hud_locked">Dragon HUD Locked — Tap shield to unlock</string>
+    <string name="vault_title">Private Dragon Vault</string>
+    <string name="vault_subtitle">PIN-protected hidden media container</string>
+</resources>
