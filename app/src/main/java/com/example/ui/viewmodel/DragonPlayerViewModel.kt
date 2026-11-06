@@ -131,28 +131,28 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _sortOption = MutableStateFlow(VideoSortOption.DATE)
+    private val _sortOption = MutableStateFlow(repository.getInitialVideoSortOption())
     val sortOption: StateFlow<VideoSortOption> = _sortOption.asStateFlow()
 
-    private val _sortAscending = MutableStateFlow(false)
+    private val _sortAscending = MutableStateFlow(repository.getInitialVideoSortAscending())
     val sortAscending: StateFlow<Boolean> = _sortAscending.asStateFlow()
 
-    private val _libraryViewStyle = MutableStateFlow(MediaViewStyle.DETAILED_LIST)
+    private val _libraryViewStyle = MutableStateFlow(repository.getInitialLibraryViewStyle())
     val libraryViewStyle: StateFlow<MediaViewStyle> = _libraryViewStyle.asStateFlow()
 
-    private val _libraryCardSize = MutableStateFlow(MediaCardSize.MEDIUM)
+    private val _libraryCardSize = MutableStateFlow(repository.getInitialLibraryCardSize())
     val libraryCardSize: StateFlow<MediaCardSize> = _libraryCardSize.asStateFlow()
 
-    private val _folderViewStyle = MutableStateFlow(MediaViewStyle.DETAILED_LIST)
+    private val _folderViewStyle = MutableStateFlow(repository.getInitialFolderViewStyle())
     val folderViewStyle: StateFlow<MediaViewStyle> = _folderViewStyle.asStateFlow()
 
-    private val _folderCardSize = MutableStateFlow(MediaCardSize.MEDIUM)
+    private val _folderCardSize = MutableStateFlow(repository.getInitialFolderCardSize())
     val folderCardSize: StateFlow<MediaCardSize> = _folderCardSize.asStateFlow()
 
-    private val _folderSortOption = MutableStateFlow(FolderSortOption.VIDEO_COUNT)
+    private val _folderSortOption = MutableStateFlow(repository.getInitialFolderSortOption())
     val folderSortOption: StateFlow<FolderSortOption> = _folderSortOption.asStateFlow()
 
-    private val _folderSortAscending = MutableStateFlow(false)
+    private val _folderSortAscending = MutableStateFlow(repository.getInitialFolderSortAscending())
     val folderSortAscending: StateFlow<Boolean> = _folderSortAscending.asStateFlow()
 
     private val _selectedCategoryFilter = MutableStateFlow("All")
@@ -561,36 +561,56 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun setSortOption(option: VideoSortOption) {
-        if (_sortOption.value == option) {
-            _sortAscending.update { !it }
+        val newAsc = if (_sortOption.value == option) {
+            !_sortAscending.value
         } else {
-            _sortOption.value = option
-            _sortAscending.value = option == VideoSortOption.NAME
+            option == VideoSortOption.NAME
+        }
+        _sortOption.value = option
+        _sortAscending.value = newAsc
+        viewModelScope.launch {
+            repository.saveVideoSort(option, newAsc)
         }
     }
 
     fun setLibraryViewStyle(style: MediaViewStyle) {
         _libraryViewStyle.value = style
+        viewModelScope.launch {
+            repository.saveLibraryViewStyle(style)
+        }
     }
 
     fun setLibraryCardSize(size: MediaCardSize) {
         _libraryCardSize.value = size
+        viewModelScope.launch {
+            repository.saveLibraryCardSize(size)
+        }
     }
 
     fun setFolderViewStyle(style: MediaViewStyle) {
         _folderViewStyle.value = style
+        viewModelScope.launch {
+            repository.saveFolderViewStyle(style)
+        }
     }
 
     fun setFolderCardSize(size: MediaCardSize) {
         _folderCardSize.value = size
+        viewModelScope.launch {
+            repository.saveFolderCardSize(size)
+        }
     }
 
     fun setFolderSortOption(option: FolderSortOption) {
-        if (_folderSortOption.value == option) {
-            _folderSortAscending.update { !it }
+        val newAsc = if (_folderSortOption.value == option) {
+            !_folderSortAscending.value
         } else {
-            _folderSortOption.value = option
-            _folderSortAscending.value = option == FolderSortOption.NAME
+            option == FolderSortOption.NAME
+        }
+        _folderSortOption.value = option
+        _folderSortAscending.value = newAsc
+        viewModelScope.launch {
+            repository.saveFolderSort(option, newAsc)
         }
     }
 

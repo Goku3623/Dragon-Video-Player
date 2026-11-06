@@ -17,9 +17,13 @@ import com.example.domain.model.AudioEngineConfig
 import com.example.domain.model.CodecCapabilitySpec
 import com.example.domain.model.DecoderMode
 import com.example.domain.model.EqualizerPreset
+import com.example.domain.model.FolderSortOption
+import com.example.domain.model.MediaCardSize
+import com.example.domain.model.MediaViewStyle
 import com.example.domain.model.SubtitleColorChoice
 import com.example.domain.model.SubtitleFontChoice
 import com.example.domain.model.SubtitleStyleConfig
+import com.example.domain.model.VideoSortOption
 import com.example.ui.theme.DragonBorderStyle
 import com.example.ui.theme.DragonNotifPanelStyle
 import com.example.ui.theme.DragonThemeConfig
@@ -67,6 +71,58 @@ class DragonRepository(
         val AUDIO_DELAY_MS = longPreferencesKey("audio_delay_ms")
         val AUDIO_EQ_PRESET = stringPreferencesKey("audio_eq_preset")
         val AUDIO_BASS_BOOST = intPreferencesKey("audio_bass_boost")
+
+        val VIDEO_SORT_OPTION = stringPreferencesKey("video_sort_option")
+        val VIDEO_SORT_ASCENDING = booleanPreferencesKey("video_sort_ascending")
+        val LIBRARY_VIEW_STYLE = stringPreferencesKey("library_view_style")
+        val LIBRARY_CARD_SIZE = stringPreferencesKey("library_card_size")
+
+        val FOLDER_SORT_OPTION = stringPreferencesKey("folder_sort_option")
+        val FOLDER_SORT_ASCENDING = booleanPreferencesKey("folder_sort_ascending")
+        val FOLDER_VIEW_STYLE = stringPreferencesKey("folder_view_style")
+        val FOLDER_CARD_SIZE = stringPreferencesKey("folder_card_size")
+    }
+
+    private val syncPrefs by lazy {
+        context.getSharedPreferences("dragon_ui_sort_style_prefs", Context.MODE_PRIVATE)
+    }
+
+    fun getInitialVideoSortOption(): VideoSortOption {
+        val name = syncPrefs.getString("video_sort_option", null) ?: VideoSortOption.DATE.name
+        return VideoSortOption.entries.find { it.name == name } ?: VideoSortOption.DATE
+    }
+
+    fun getInitialVideoSortAscending(): Boolean {
+        return syncPrefs.getBoolean("video_sort_ascending", false)
+    }
+
+    fun getInitialLibraryViewStyle(): MediaViewStyle {
+        val name = syncPrefs.getString("library_view_style", null) ?: MediaViewStyle.DETAILED_LIST.name
+        return MediaViewStyle.entries.find { it.name == name } ?: MediaViewStyle.DETAILED_LIST
+    }
+
+    fun getInitialLibraryCardSize(): MediaCardSize {
+        val name = syncPrefs.getString("library_card_size", null) ?: MediaCardSize.MEDIUM.name
+        return MediaCardSize.entries.find { it.name == name } ?: MediaCardSize.MEDIUM
+    }
+
+    fun getInitialFolderSortOption(): FolderSortOption {
+        val name = syncPrefs.getString("folder_sort_option", null) ?: FolderSortOption.VIDEO_COUNT.name
+        return FolderSortOption.entries.find { it.name == name } ?: FolderSortOption.VIDEO_COUNT
+    }
+
+    fun getInitialFolderSortAscending(): Boolean {
+        return syncPrefs.getBoolean("folder_sort_ascending", false)
+    }
+
+    fun getInitialFolderViewStyle(): MediaViewStyle {
+        val name = syncPrefs.getString("folder_view_style", null) ?: MediaViewStyle.DETAILED_LIST.name
+        return MediaViewStyle.entries.find { it.name == name } ?: MediaViewStyle.DETAILED_LIST
+    }
+
+    fun getInitialFolderCardSize(): MediaCardSize {
+        val name = syncPrefs.getString("folder_card_size", null) ?: MediaCardSize.MEDIUM.name
+        return MediaCardSize.entries.find { it.name == name } ?: MediaCardSize.MEDIUM
     }
 
     val publicVideosFlow: Flow<List<VideoEntity>> = dao.observePublicVideos()
@@ -195,6 +251,56 @@ class DragonRepository(
             prefs[Keys.AUDIO_DELAY_MS] = config.audioDelayMs
             prefs[Keys.AUDIO_EQ_PRESET] = config.equalizerPreset.name
             prefs[Keys.AUDIO_BASS_BOOST] = config.bassBoostStrength
+        }
+    }
+
+    suspend fun saveVideoSort(option: VideoSortOption, ascending: Boolean) {
+        syncPrefs.edit()
+            .putString("video_sort_option", option.name)
+            .putBoolean("video_sort_ascending", ascending)
+            .apply()
+        context.dragonDataStore.edit { prefs ->
+            prefs[Keys.VIDEO_SORT_OPTION] = option.name
+            prefs[Keys.VIDEO_SORT_ASCENDING] = ascending
+        }
+    }
+
+    suspend fun saveLibraryViewStyle(style: MediaViewStyle) {
+        syncPrefs.edit().putString("library_view_style", style.name).apply()
+        context.dragonDataStore.edit { prefs ->
+            prefs[Keys.LIBRARY_VIEW_STYLE] = style.name
+        }
+    }
+
+    suspend fun saveLibraryCardSize(size: MediaCardSize) {
+        syncPrefs.edit().putString("library_card_size", size.name).apply()
+        context.dragonDataStore.edit { prefs ->
+            prefs[Keys.LIBRARY_CARD_SIZE] = size.name
+        }
+    }
+
+    suspend fun saveFolderSort(option: FolderSortOption, ascending: Boolean) {
+        syncPrefs.edit()
+            .putString("folder_sort_option", option.name)
+            .putBoolean("folder_sort_ascending", ascending)
+            .apply()
+        context.dragonDataStore.edit { prefs ->
+            prefs[Keys.FOLDER_SORT_OPTION] = option.name
+            prefs[Keys.FOLDER_SORT_ASCENDING] = ascending
+        }
+    }
+
+    suspend fun saveFolderViewStyle(style: MediaViewStyle) {
+        syncPrefs.edit().putString("folder_view_style", style.name).apply()
+        context.dragonDataStore.edit { prefs ->
+            prefs[Keys.FOLDER_VIEW_STYLE] = style.name
+        }
+    }
+
+    suspend fun saveFolderCardSize(size: MediaCardSize) {
+        syncPrefs.edit().putString("folder_card_size", size.name).apply()
+        context.dragonDataStore.edit { prefs ->
+            prefs[Keys.FOLDER_CARD_SIZE] = size.name
         }
     }
 
