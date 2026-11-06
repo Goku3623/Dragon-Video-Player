@@ -35,11 +35,64 @@ enum class AspectRatioMode(val label: String, val ratioValue: Float?) {
     STRETCH("Full Stretch", null)
 }
 
+enum class PlayerLoopMode(
+    val label: String,
+    val shortBadge: String,
+    val description: String
+) {
+    OFF(
+        label = "Loop Off",
+        shortBadge = "OFF",
+        description = "Play video once without repeating"
+    ),
+    LOOP_ONE(
+        label = "Loop Single Video",
+        shortBadge = "1×",
+        description = "Repeat the current video continuously"
+    ),
+    LOOP_ALL(
+        label = "Loop Queue / All",
+        shortBadge = "ALL",
+        description = "Loop through all videos in the current queue"
+    ),
+    SHUFFLE_LOOP(
+        label = "Shuffle & Loop",
+        shortBadge = "SHUF",
+        description = "Continuously play queue videos in shuffled order"
+    ),
+    AB_REPEAT(
+        label = "A–B Segment Loop",
+        shortBadge = "A-B",
+        description = "Loop a custom section between Point A and Point B"
+    )
+}
+
 enum class VideoSortOption(val label: String) {
     NAME("Name"),
     DATE("Date Added"),
     SIZE("File Size"),
     DURATION("Duration")
+}
+
+enum class FolderSortOption(val label: String) {
+    VIDEO_COUNT("Video Count"),
+    NAME("Folder Name"),
+    TOTAL_SIZE("Total Size"),
+    TOTAL_DURATION("Total Duration")
+}
+
+enum class MediaViewStyle(val label: String, val shortLabel: String) {
+    DETAILED_LIST("Detailed List", "List"),
+    COMPACT_LIST("Compact List", "Compact"),
+    GRID_2_COLUMN("Grid (2 Columns)", "2× Grid"),
+    GRID_3_COLUMN("Grid (3 Columns)", "3× Grid"),
+    SHOWCASE_BANNER("Large Showcase", "Showcase")
+}
+
+enum class MediaCardSize(val label: String, val shortLabel: String, val scaleFactor: Float) {
+    SMALL("Small Size", "S", 0.80f),
+    MEDIUM("Medium Size", "M", 1.00f),
+    LARGE("Large Size", "L", 1.24f)
 }
 
 enum class SubtitleFontChoice(val label: String) {
@@ -142,7 +195,8 @@ data class VideoFolderSummary(
     val videoCount: Int,
     val totalSizeBytes: Long,
     val totalDurationMs: Long,
-    val previewVideos: List<String>
+    val previewVideos: List<String>,
+    val leadVideo: com.example.data.local.VideoEntity? = null
 )
 
 @Immutable

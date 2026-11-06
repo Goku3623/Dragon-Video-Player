@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -101,6 +102,7 @@ import com.example.domain.model.SubtitleStyleConfig
 import com.example.player.StorageScannerHelper
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.dragonGlassSurface
+import com.example.ui.viewmodel.readDeviceBrightnessFraction
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -124,6 +126,7 @@ fun GestureVideoSurface(
     panOffsetY: Float,
     isHudLocked: Boolean,
     screenBrightness: Float,
+    isBrightnessOverridden: Boolean,
     volumeBoostPercent: Int,
     currentPositionMs: Long,
     durationMs: Long,
@@ -161,20 +164,31 @@ fun GestureVideoSurface(
 
     // Keep updated references so pointerInput never restarts mid-gesture
     val latestBrightness by rememberUpdatedState(screenBrightness)
+    val latestBrightnessOverridden by rememberUpdatedState(isBrightnessOverridden)
     val latestVolumeBoost by rememberUpdatedState(volumeBoostPercent)
     val latestPositionMs by rememberUpdatedState(currentPositionMs)
     val latestDurationMs by rememberUpdatedState(durationMs)
     val latestHudLocked by rememberUpdatedState(isHudLocked)
 
-    // Sync external state into live display state when not actively swiping
-    LaunchedEffect(screenBrightness) {
+    // Sync external state into live display state when not actively swiping.
+    // Keep window.attributes.screenBrightness = BRIGHTNESS_OVERRIDE_NONE (-1f) until the user
+    // explicitly swipes to adjust brightness so the video starts at the exact device brightness.
+    LaunchedEffect(screenBrightness, isBrightnessOverridden) {
         if (activeSwipeMode != ActiveSwipeMode.BRIGHTNESS_LEFT) {
-            liveBrightness = screenBrightness
+            liveBrightness = if (isBrightnessOverridden) {
+                screenBrightness
+            } else {
+                readDeviceBrightnessFraction(context)
+            }
         }
         val activity = context as? Activity ?: return@LaunchedEffect
         val window = activity.window
         val params = window.attributes
-        params.screenBrightness = screenBrightness.coerceIn(0.01f, 1.0f)
+        params.screenBrightness = if (isBrightnessOverridden) {
+            screenBrightness.coerceIn(0.01f, 1.0f)
+        } else {
+            WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
         window.attributes = params
     }
 
@@ -252,7 +266,11 @@ fun GestureVideoSurface(
                     val startPositionMs = latestPositionMs
                     val videoDurMs = latestDurationMs.coerceAtLeast(1_000L)
 
-                    liveBrightness = latestBrightness
+                    liveBrightness = if (latestBrightnessOverridden) {
+                        latestBrightness
+                    } else {
+                        readDeviceBrightnessFraction(context)
+                    }
                     liveVolumeFloat = latestVolumeBoost.toFloat()
                     liveSeekTargetMs = startPositionMs
                     liveSeekDeltaMs = 0L

@@ -8,6 +8,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,6 +19,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -61,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,11 +80,15 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.domain.model.DecoderMode
+import com.example.player.StorageScannerHelper
 import com.example.ui.player.AudioAndEqualizerSheet
+import com.example.ui.player.DragonBackgroundAudioNotificationPanel
 import com.example.ui.player.DragonPlayerHudOverlay
+import com.example.ui.player.DragonSystemAudioNotificationHelper
 import com.example.ui.player.GestureVideoSurface
 import com.example.ui.player.SubtitleCustomizerSheet
 import com.example.ui.screens.CodecEngineScreenContent
+import com.example.ui.screens.DragonIntroAnimationOverlay
 import com.example.ui.screens.FoldersScreenContent
 import com.example.ui.screens.LibraryScreenContent
 import com.example.ui.screens.MoreHubScreenContent
@@ -105,6 +112,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Keep app brightness identical to device brightness on launch
+        val params = window.attributes
+        params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+
+        // Set display to device default maximum refresh rate (e.g. 120Hz/90Hz/144Hz) for fluid animation
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            runCatching {
+                val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
+                val defaultDisplay = dm?.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+                val maxMode = defaultDisplay?.supportedModes?.maxByOrNull { it.refreshRate }
+                if (maxMode != null) {
+                    params.preferredDisplayModeId = maxMode.modeId
+                }
+            }
+        }
+
+        window.attributes = params
+        viewModel.syncBrightnessWithDevice()
         handleIncomingMediaIntent(intent)
 
         setContent {
@@ -118,16 +143,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.syncBrightnessWithDevice()
+        val state = viewModel.playerState.value
+        if (!state.isPlayerOverlayOpen || !state.isBrightnessOverridden) {
+            val params = window.attributes
+            params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            window.attributes = params
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingMediaIntent(intent)
     }
 
     private fun handleIncomingMediaIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_VIEW) {
-            intent.data?.let { uri ->
-                viewModel.onSingleVideoPicked(uri)
+        when (intent?.action) {
+            Intent.ACTION_VIEW -> {
+                intent.data?.let { uri ->
+                    viewModel.onSingleVideoPicked(uri)
+                }
             }
+            DragonSystemAudioNotificationHelper.ACTION_BG_EXPAND_PLAYER -> viewModel.resumePlayerOverlayFromBackground()
+            DragonSystemAudioNotificationHelper.ACTION_BG_PLAY_PAUSE -> viewModel.togglePlayPause()
+            DragonSystemAudioNotificationHelper.ACTION_BG_REWIND -> viewModel.seekRelative(-10_000L)
+            DragonSystemAudioNotificationHelper.ACTION_BG_FORWARD -> viewModel.seekRelative(10_000L)
+            DragonSystemAudioNotificationHelper.ACTION_BG_NEXT -> viewModel.playNextInQueue()
+            DragonSystemAudioNotificationHelper.ACTION_BG_STOP -> viewModel.stopBackgroundAudioSession()
         }
     }
 
@@ -174,11 +218,21 @@ fun DragonVideoPlayerRoot(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val vaultVideos by viewModel.vaultVideos.collectAsStateWithLifecycle()
     val trashedVideos by viewModel.trashedVideos.collectAsStateWithLifecycle()
+    val savedNetworkStreams by viewModel.savedNetworkStreams.collectAsStateWithLifecycle()
+    val streamBookmarks by viewModel.streamBookmarks.collectAsStateWithLifecycle()
     val pendingDeleteIntentSender by viewModel.pendingDeleteIntentSender.collectAsStateWithLifecycle()
+    val hasStoragePermission by viewModel.hasStoragePermission.collectAsStateWithLifecycle()
+    val isScanningStorage by viewModel.isScanningStorage.collectAsStateWithLifecycle()
     val isVaultUnlocked by viewModel.isVaultUnlocked.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val sortOption by viewModel.sortOption.collectAsStateWithLifecycle()
     val sortAscending by viewModel.sortAscending.collectAsStateWithLifecycle()
+    val libraryViewStyle by viewModel.libraryViewStyle.collectAsStateWithLifecycle()
+    val libraryCardSize by viewModel.libraryCardSize.collectAsStateWithLifecycle()
+    val folderViewStyle by viewModel.folderViewStyle.collectAsStateWithLifecycle()
+    val folderCardSize by viewModel.folderCardSize.collectAsStateWithLifecycle()
+    val folderSortOption by viewModel.folderSortOption.collectAsStateWithLifecycle()
+    val folderSortAscending by viewModel.folderSortAscending.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedCategoryFilter.collectAsStateWithLifecycle()
     val selectedFolder by viewModel.selectedFolderFilter.collectAsStateWithLifecycle()
     val decoderMode by viewModel.decoderMode.collectAsStateWithLifecycle()
@@ -203,6 +257,62 @@ fun DragonVideoPlayerRoot(
         } else {
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             insetsController.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // Keep window brightness identical to device brightness unless the user actively swipes brightness during video playback
+    LaunchedEffect(
+        playerState.isPlayerOverlayOpen,
+        playerState.isBrightnessOverridden,
+        playerState.screenBrightness
+    ) {
+        val activity = context as? Activity ?: return@LaunchedEffect
+        val window = activity.window
+        val params = window.attributes
+        params.screenBrightness = if (playerState.isPlayerOverlayOpen && playerState.isBrightnessOverridden) {
+            playerState.screenBrightness.coerceIn(0.01f, 1.0f)
+        } else {
+            WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        window.attributes = params
+    }
+
+    // Synchronize the Theme-Adaptive Custom RemoteViews System Notification when video is playing as Background Audio Mode
+    LaunchedEffect(
+        playerState.isPlayerOverlayOpen,
+        playerState.activeVideo,
+        playerState.isPlaying,
+        bgAudioEnabled,
+        themeConfig,
+        audioConfig.volumeBoostPercent
+    ) {
+        viewModel.refreshSystemNotificationNow()
+    }
+
+    // Runtime Storage / Media Permission Launcher (Requested automatically on first launch)
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        viewModel.onStoragePermissionsResult(results)
+    }
+
+    var showDragonIntro by rememberSaveable { mutableStateOf(true) }
+    var didPromptInitialStoragePermission by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshStoragePermissionState()
+        if (showDragonIntro) {
+            delay(2000L)
+            showDragonIntro = false
+        }
+        val needsNotificationPerm = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        if ((!StorageScannerHelper.hasStoragePermission(context) || needsNotificationPerm) && !didPromptInitialStoragePermission) {
+            didPromptInitialStoragePermission = true
+            storagePermissionLauncher.launch(StorageScannerHelper.getRequiredStoragePermissions())
         }
     }
 
@@ -291,6 +401,7 @@ fun DragonVideoPlayerRoot(
                     panOffsetY = playerState.panOffsetY,
                     isHudLocked = playerState.isHudLocked,
                     screenBrightness = playerState.screenBrightness,
+                    isBrightnessOverridden = playerState.isBrightnessOverridden,
                     volumeBoostPercent = audioConfig.volumeBoostPercent,
                     currentPositionMs = playerState.currentPositionMs,
                     durationMs = playerState.durationMs,
@@ -334,6 +445,9 @@ fun DragonVideoPlayerRoot(
                         durationMs = playerState.durationMs,
                         bufferedPercentage = playerState.bufferedPercentage,
                         playbackSpeed = playerState.playbackSpeed,
+                        loopMode = playerState.loopMode,
+                        loopAbStartMs = playerState.loopAbStartMs,
+                        loopAbEndMs = playerState.loopAbEndMs,
                         aspectRatioMode = playerState.aspectRatioMode,
                         decoderMode = decoderMode,
                         backgroundAudioEnabled = bgAudioEnabled,
@@ -357,6 +471,26 @@ fun DragonVideoPlayerRoot(
                         },
                         onPlayPrevious = { viewModel.playPreviousInQueue() },
                         onPlayNext = { viewModel.playNextInQueue() },
+                        onSelectLoopMode = { mode ->
+                            viewModel.setLoopMode(mode)
+                            hudInteractionTick++
+                        },
+                        onCycleLoopMode = {
+                            viewModel.cycleLoopMode()
+                            hudInteractionTick++
+                        },
+                        onSetAbLoopPointA = {
+                            viewModel.setAbLoopPointA()
+                            hudInteractionTick++
+                        },
+                        onSetAbLoopPointB = {
+                            viewModel.setAbLoopPointB()
+                            hudInteractionTick++
+                        },
+                        onClearAbLoopPoints = {
+                            viewModel.clearAbLoopPoints()
+                            hudInteractionTick++
+                        },
                         onCycleAspectRatio = {
                             viewModel.cycleAspectRatio()
                             hudInteractionTick++
@@ -435,14 +569,23 @@ fun DragonVideoPlayerRoot(
                 },
                 bottomBar = {
                     Column {
-                        // Background Audio / Minimized Mini-Player Bar
-                        playerState.activeVideo?.let { miniVideo ->
-                            MinimizedDragonPlayerBar(
-                                title = miniVideo.title,
-                                subtitle = "${miniVideo.containerFormat} • ${miniVideo.videoCodec}",
+                        // Compact Theme-Adaptive Notification Control Panel shown whenever a video is active
+                        val bgVideo = playerState.activeVideo
+                        if (!playerState.isPlayerOverlayOpen && bgVideo != null) {
+                            DragonBackgroundAudioNotificationPanel(
+                                video = bgVideo,
                                 isPlaying = playerState.isPlaying,
-                                onExpandPlayer = { viewModel.playVideo(miniVideo) },
-                                onTogglePlayPause = { viewModel.togglePlayPause() }
+                                currentPositionMs = playerState.currentPositionMs,
+                                durationMs = playerState.durationMs,
+                                volumeBoostPercent = audioConfig.volumeBoostPercent,
+                                onExpandToVideoPlayer = viewModel::resumePlayerOverlayFromBackground,
+                                onTogglePlayPause = viewModel::togglePlayPause,
+                                onSeekTo = viewModel::seekToPosition,
+                                onSeekRelative = viewModel::seekRelative,
+                                onPlayPrevious = { viewModel.playPreviousInQueue(keepInBackgroundIfClosed = true) },
+                                onPlayNext = { viewModel.playNextInQueue(keepInBackgroundIfClosed = true) },
+                                onCycleNotifStyle = viewModel::cycleNotificationPanelStyle,
+                                onStopBackgroundSession = viewModel::stopBackgroundAudioSession
                             )
                         }
 
@@ -492,11 +635,17 @@ fun DragonVideoPlayerRoot(
                             searchQuery = searchQuery,
                             sortOption = sortOption,
                             sortAscending = sortAscending,
+                            viewStyle = libraryViewStyle,
+                            cardSize = libraryCardSize,
                             selectedCategory = selectedCategory,
                             selectedFolderFilter = selectedFolder,
                             decoderMode = decoderMode,
+                            hasStoragePermission = hasStoragePermission,
+                            isScanningStorage = isScanningStorage,
                             onSearchQueryChange = viewModel::setSearchQuery,
                             onSortOptionSelect = viewModel::setSortOption,
+                            onViewStyleSelect = viewModel::setLibraryViewStyle,
+                            onCardSizeSelect = viewModel::setLibraryCardSize,
                             onCategorySelect = viewModel::setCategoryFilter,
                             onClearFolderFilter = { viewModel.setFolderFilter(null) },
                             onPlayVideo = { video -> viewModel.playVideo(video, videos) },
@@ -504,7 +653,20 @@ fun DragonVideoPlayerRoot(
                             onMoveToVault = viewModel::toggleVaultForVideo,
                             onDeleteToTrash = viewModel::moveVideoToTrash,
                             onToggleVideoInPlaylist = viewModel::toggleVideoInPlaylist,
-                            onScanStorage = viewModel::scanDeviceStorage,
+                            onRequestStoragePermission = {
+                                storagePermissionLauncher.launch(
+                                    StorageScannerHelper.getRequiredStoragePermissions()
+                                )
+                            },
+                            onScanStorage = {
+                                if (StorageScannerHelper.hasStoragePermission(context)) {
+                                    viewModel.scanDeviceStorage()
+                                } else {
+                                    storagePermissionLauncher.launch(
+                                        StorageScannerHelper.getRequiredStoragePermissions()
+                                    )
+                                }
+                            },
                             onPickSafFolder = { safFolderLauncher.launch(null) },
                             onPickSingleVideo = {
                                 pickVideoLauncher.launch(
@@ -518,8 +680,29 @@ fun DragonVideoPlayerRoot(
 
                         DragonNavTab.FOLDERS -> FoldersScreenContent(
                             folders = folders,
+                            hasStoragePermission = hasStoragePermission,
+                            folderViewStyle = folderViewStyle,
+                            folderCardSize = folderCardSize,
+                            folderSortOption = folderSortOption,
+                            folderSortAscending = folderSortAscending,
                             onSelectFolder = { folderName -> viewModel.setFolderFilter(folderName) },
-                            onScanStorage = viewModel::scanDeviceStorage,
+                            onSelectFolderViewStyle = viewModel::setFolderViewStyle,
+                            onSelectFolderCardSize = viewModel::setFolderCardSize,
+                            onSelectFolderSortOption = viewModel::setFolderSortOption,
+                            onRequestStoragePermission = {
+                                storagePermissionLauncher.launch(
+                                    StorageScannerHelper.getRequiredStoragePermissions()
+                                )
+                            },
+                            onScanStorage = {
+                                if (StorageScannerHelper.hasStoragePermission(context)) {
+                                    viewModel.scanDeviceStorage()
+                                } else {
+                                    storagePermissionLauncher.launch(
+                                        StorageScannerHelper.getRequiredStoragePermissions()
+                                    )
+                                }
+                            },
                             onMountSafFolder = { safFolderLauncher.launch(null) }
                         )
 
@@ -540,14 +723,21 @@ fun DragonVideoPlayerRoot(
                                     trashVideoCount = trashedVideos.size,
                                     backgroundAudioEnabled = bgAudioEnabled,
                                     onOpenSubSection = viewModel::openMoreSubSection,
+                                    onSelectDecoderMode = viewModel::setDecoderMode,
                                     onToggleBackgroundAudio = viewModel::setBackgroundAudio
                                 )
 
                                 MoreSubSection.NETWORK_STREAM -> NetworkStreamScreenContent(
-                                    savedStreams = videos.filter { it.isNetworkStream },
+                                    savedStreams = savedNetworkStreams,
+                                    streamBookmarks = streamBookmarks,
                                     onBackToMore = { viewModel.openMoreSubSection(MoreSubSection.HUB) },
                                     onLaunchNetworkStream = viewModel::addAndPlayNetworkStream,
-                                    onPlaySavedStream = { streamVideo -> viewModel.playVideo(streamVideo) }
+                                    onSaveStreamBookmark = viewModel::saveStreamBookmark,
+                                    onPlayBookmarkedStream = viewModel::playBookmarkedStream,
+                                    onRemoveStreamBookmark = viewModel::removeStreamBookmark,
+                                    onPlaySavedStream = { streamVideo -> viewModel.playVideo(streamVideo) },
+                                    onResetRecentStreams = viewModel::resetRecentNetworkStreams,
+                                    onRemoveStream = viewModel::removeSingleNetworkStream
                                 )
 
                                 MoreSubSection.TRASH_BIN -> TrashBinScreenContent(
@@ -616,6 +806,16 @@ fun DragonVideoPlayerRoot(
                     )
                 }
             }
+        }
+
+        // 2-Second Red Dragon Splash Animation Overlay on App Launch
+        AnimatedVisibility(
+            visible = showDragonIntro,
+            enter = fadeIn(animationSpec = tween(250)),
+            exit = fadeOut(animationSpec = tween(420)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            DragonIntroAnimationOverlay()
         }
     }
 }
@@ -706,59 +906,6 @@ private fun DragonTopAppBar(
                     modifier = Modifier.size(18.dp)
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun MinimizedDragonPlayerBar(
-    title: String,
-    subtitle: String,
-    isPlaying: Boolean,
-    onExpandPlayer: () -> Unit,
-    onTogglePlayPause: () -> Unit
-) {
-    val scheme = MaterialTheme.colorScheme
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .dragonGlassSurface(cornerRadiusOverride = 16.dp, elevated = true, accentGlow = true)
-            .clickable { onExpandPlayer() }
-            .padding(horizontal = 14.dp, vertical = 10.dp)
-            .testTag("minimized_player_bar"),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "Background Session Active • $subtitle",
-                style = MaterialTheme.typography.labelSmall,
-                color = scheme.primary,
-                maxLines = 1
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-                .background(scheme.primary)
-                .clickable { onTogglePlayPause() },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "Pause" else "Resume",
-                tint = Color.Black
-            )
         }
     }
 }

@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.local.DragonDao
 import com.example.data.local.PlaylistEntity
+import com.example.data.local.StreamBookmarkEntity
 import com.example.data.local.VideoEntity
 import com.example.domain.model.AudioChannelMode
 import com.example.domain.model.AudioEngineConfig
@@ -19,6 +20,8 @@ import com.example.domain.model.EqualizerPreset
 import com.example.domain.model.SubtitleColorChoice
 import com.example.domain.model.SubtitleFontChoice
 import com.example.domain.model.SubtitleStyleConfig
+import com.example.ui.theme.DragonBorderStyle
+import com.example.ui.theme.DragonNotifPanelStyle
 import com.example.ui.theme.DragonThemeConfig
 import com.example.ui.theme.DragonThemePreset
 import kotlinx.coroutines.flow.Flow
@@ -38,6 +41,12 @@ class DragonRepository(
         val HUD_CORNER_RADIUS = floatPreferencesKey("hud_corner_radius")
         val BACKDROP_BLUR = floatPreferencesKey("backdrop_blur")
         val DRAGON_SCALE_MESH = booleanPreferencesKey("dragon_scale_mesh")
+        val BORDER_STYLE = stringPreferencesKey("border_style")
+        val NOTIF_PANEL_STYLE = stringPreferencesKey("notif_panel_style")
+        val NEON_BORDER_WIDTH = floatPreferencesKey("neon_border_width")
+        val SURFACE_OPACITY = floatPreferencesKey("surface_opacity")
+        val USE_TRUE_OLED_BLACK = booleanPreferencesKey("use_true_oled_black")
+        val ENABLE_ANIMATED_AURA = booleanPreferencesKey("enable_animated_aura")
 
         val DECODER_MODE = stringPreferencesKey("decoder_mode")
         val BACKGROUND_AUDIO = booleanPreferencesKey("background_audio")
@@ -63,11 +72,17 @@ class DragonRepository(
     val publicVideosFlow: Flow<List<VideoEntity>> = dao.observePublicVideos()
     val vaultVideosFlow: Flow<List<VideoEntity>> = dao.observeVaultVideos()
     val trashedVideosFlow: Flow<List<VideoEntity>> = dao.observeTrashedVideos()
+    val networkStreamsFlow: Flow<List<VideoEntity>> = dao.observeNetworkStreams()
+    val streamBookmarksFlow: Flow<List<StreamBookmarkEntity>> = dao.observeStreamBookmarks()
     val playlistsFlow: Flow<List<PlaylistEntity>> = dao.observePlaylists()
 
     val themeConfigFlow: Flow<DragonThemeConfig> = context.dragonDataStore.data.map { prefs ->
         val presetName = prefs[Keys.THEME_PRESET] ?: DragonThemePreset.DRAGON_FLAME.name
         val preset = DragonThemePreset.entries.find { it.name == presetName } ?: DragonThemePreset.DRAGON_FLAME
+        val borderName = prefs[Keys.BORDER_STYLE] ?: DragonBorderStyle.NEON_GRADIENT.name
+        val borderStyle = DragonBorderStyle.entries.find { it.name == borderName } ?: DragonBorderStyle.NEON_GRADIENT
+        val notifName = prefs[Keys.NOTIF_PANEL_STYLE] ?: DragonNotifPanelStyle.SPECTRUM_BARS.name
+        val notifStyle = DragonNotifPanelStyle.entries.find { it.name == notifName } ?: DragonNotifPanelStyle.SPECTRUM_BARS
         DragonThemeConfig(
             preset = preset,
             useCustomAccent = prefs[Keys.USE_CUSTOM_ACCENT] ?: false,
@@ -75,7 +90,13 @@ class DragonRepository(
             glowIntensity = prefs[Keys.GLOW_INTENSITY] ?: 0.75f,
             hudCornerRadiusDp = prefs[Keys.HUD_CORNER_RADIUS] ?: 18f,
             backdropBlurStrength = prefs[Keys.BACKDROP_BLUR] ?: 0.72f,
-            showDragonScalePattern = prefs[Keys.DRAGON_SCALE_MESH] ?: true
+            showDragonScalePattern = prefs[Keys.DRAGON_SCALE_MESH] ?: true,
+            borderStyle = borderStyle,
+            notifPanelStyle = notifStyle,
+            neonBorderWidthDp = prefs[Keys.NEON_BORDER_WIDTH] ?: 1.3f,
+            surfaceOpacity = prefs[Keys.SURFACE_OPACITY] ?: 0.80f,
+            useTrueOledBlack = prefs[Keys.USE_TRUE_OLED_BLACK] ?: false,
+            enableAnimatedAura = prefs[Keys.ENABLE_ANIMATED_AURA] ?: true
         )
     }
 
@@ -132,6 +153,12 @@ class DragonRepository(
             prefs[Keys.HUD_CORNER_RADIUS] = updated.hudCornerRadiusDp
             prefs[Keys.BACKDROP_BLUR] = updated.backdropBlurStrength
             prefs[Keys.DRAGON_SCALE_MESH] = updated.showDragonScalePattern
+            prefs[Keys.BORDER_STYLE] = updated.borderStyle.name
+            prefs[Keys.NOTIF_PANEL_STYLE] = updated.notifPanelStyle.name
+            prefs[Keys.NEON_BORDER_WIDTH] = updated.neonBorderWidthDp
+            prefs[Keys.SURFACE_OPACITY] = updated.surfaceOpacity
+            prefs[Keys.USE_TRUE_OLED_BLACK] = updated.useTrueOledBlack
+            prefs[Keys.ENABLE_ANIMATED_AURA] = updated.enableAnimatedAura
         }
     }
 
@@ -224,6 +251,40 @@ class DragonRepository(
 
     suspend fun emptyTrashBinForever() {
         dao.deleteAllTrashedVideos()
+    }
+
+    suspend fun clearAllNetworkStreams() {
+        dao.clearAllNetworkStreams()
+    }
+
+    suspend fun saveStreamBookmark(title: String, url: String, protocol: String): Long {
+        val cleanUrl = url.trim()
+        val existing = dao.findStreamBookmarkByUrl(cleanUrl)
+        val effectiveTitle = title.trim().ifEmpty {
+            cleanUrl.substringAfterLast('/').substringBefore('?').ifEmpty { "Bookmarked Stream" }
+        }
+        return if (existing != null) {
+            dao.insertStreamBookmark(
+                existing.copy(
+                    title = effectiveTitle,
+                    protocol = protocol,
+                    createdAtEpochSec = System.currentTimeMillis() / 1000L
+                )
+            )
+        } else {
+            dao.insertStreamBookmark(
+                StreamBookmarkEntity(
+                    title = effectiveTitle,
+                    url = cleanUrl,
+                    protocol = protocol,
+                    createdAtEpochSec = System.currentTimeMillis() / 1000L
+                )
+            )
+        }
+    }
+
+    suspend fun removeStreamBookmark(bookmarkId: Long) {
+        dao.deleteStreamBookmarkById(bookmarkId)
     }
 
     suspend fun createPlaylist(name: String, description: String, videoIds: List<Long> = emptyList()) {

@@ -18,6 +18,9 @@ interface DragonDao {
     @Query("SELECT * FROM videos WHERE isTrashed = 1 ORDER BY trashedAtEpochSec DESC")
     fun observeTrashedVideos(): Flow<List<VideoEntity>>
 
+    @Query("SELECT * FROM videos WHERE isNetworkStream = 1 AND isTrashed = 0 ORDER BY dateAddedEpochSec DESC")
+    fun observeNetworkStreams(): Flow<List<VideoEntity>>
+
     @Query("SELECT * FROM videos ORDER BY dateAddedEpochSec DESC")
     suspend fun getAllVideosOnce(): List<VideoEntity>
 
@@ -60,6 +63,9 @@ interface DragonDao {
     @Query("DELETE FROM videos WHERE isTrashed = 1")
     suspend fun deleteAllTrashedVideos()
 
+    @Query("DELETE FROM videos WHERE isNetworkStream = 1")
+    suspend fun clearAllNetworkStreams()
+
     @Query("SELECT * FROM playlists ORDER BY createdAtEpochSec DESC")
     fun observePlaylists(): Flow<List<PlaylistEntity>>
 
@@ -71,4 +77,16 @@ interface DragonDao {
 
     @Query("DELETE FROM playlists WHERE id = :playlistId")
     suspend fun deletePlaylistById(playlistId: Long)
+
+    @Query("SELECT * FROM stream_bookmarks ORDER BY createdAtEpochSec DESC")
+    fun observeStreamBookmarks(): Flow<List<StreamBookmarkEntity>>
+
+    @Query("SELECT * FROM stream_bookmarks WHERE url = :url LIMIT 1")
+    suspend fun findStreamBookmarkByUrl(url: String): StreamBookmarkEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertStreamBookmark(bookmark: StreamBookmarkEntity): Long
+
+    @Query("DELETE FROM stream_bookmarks WHERE id = :bookmarkId")
+    suspend fun deleteStreamBookmarkById(bookmarkId: Long)
 }

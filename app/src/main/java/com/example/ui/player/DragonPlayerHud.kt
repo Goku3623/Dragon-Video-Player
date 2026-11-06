@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,8 +45,11 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
@@ -75,10 +80,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.local.VideoEntity
 import com.example.domain.model.AspectRatioMode
 import com.example.domain.model.DecoderMode
+import com.example.domain.model.PlayerLoopMode
 import com.example.player.StorageScannerHelper
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.dragonGlassSurface
@@ -95,6 +102,9 @@ fun DragonPlayerHudOverlay(
     durationMs: Long,
     bufferedPercentage: Int,
     playbackSpeed: Float,
+    loopMode: PlayerLoopMode,
+    loopAbStartMs: Long,
+    loopAbEndMs: Long?,
     aspectRatioMode: AspectRatioMode,
     decoderMode: DecoderMode,
     backgroundAudioEnabled: Boolean,
@@ -106,6 +116,11 @@ fun DragonPlayerHudOverlay(
     onStepFrame: (forward: Boolean) -> Unit,
     onPlayPrevious: () -> Unit,
     onPlayNext: () -> Unit,
+    onSelectLoopMode: (PlayerLoopMode) -> Unit,
+    onCycleLoopMode: () -> Unit,
+    onSetAbLoopPointA: () -> Unit,
+    onSetAbLoopPointB: () -> Unit,
+    onClearAbLoopPoints: () -> Unit,
     onCycleAspectRatio: () -> Unit,
     onToggleLandscapeFullscreen: () -> Unit,
     onToggleFloatingSubtitle: () -> Unit,
@@ -121,6 +136,7 @@ fun DragonPlayerHudOverlay(
     modifier: Modifier = Modifier
 ) {
     var showThreeDotMenuDialog by remember { mutableStateOf(false) }
+    var showLoopOptionsPopup by remember { mutableStateOf(false) }
     val scheme = MaterialTheme.colorScheme
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -186,7 +202,7 @@ fun DragonPlayerHudOverlay(
             }
         }
 
-        // Compact Bottom Panel: Slim Timeline Row + Compact Transport & 3-Dot Menu Row
+        // Compact Bottom Panel + Optional Loop Options Popover directly above it
         AnimatedVisibility(
             visible = isHudVisible && !isHudLocked,
             enter = fadeIn() + slideInVertically { it / 2 },
@@ -197,178 +213,304 @@ fun DragonPlayerHudOverlay(
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .dragonGlassSurface(cornerRadiusOverride = 20.dp, elevated = true, accentGlow = true)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Compact Single-Line Timeline Scrubber Row: [01:24] ----o-------- [12:14]
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Floating Loop Options Panel (shown when tapping the Loop button in the lower panel)
+                AnimatedVisibility(
+                    visible = showLoopOptionsPopup,
+                    enter = fadeIn() + slideInVertically { it / 3 },
+                    exit = fadeOut() + slideOutVertically { it / 3 }
                 ) {
-                    Text(
-                        text = StorageScannerHelper.formatDurationMs(currentPositionMs),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = scheme.primary
-                    )
-
-                    Slider(
-                        value = currentPositionMs.toFloat().coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
-                        onValueChange = { onSeekTo(it.toLong()) },
-                        valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                        colors = SliderDefaults.colors(
-                            thumbColor = scheme.primary,
-                            activeTrackColor = scheme.primary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.22f)
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(22.dp)
-                            .testTag("timeline_seek_slider")
-                    )
-
-                    Text(
-                        text = StorageScannerHelper.formatDurationMs(durationMs),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White
+                    PlayerLoopOptionsPanel(
+                        currentLoopMode = loopMode,
+                        loopAbStartMs = loopAbStartMs,
+                        loopAbEndMs = loopAbEndMs,
+                        durationMs = durationMs,
+                        onSelectLoopMode = { mode ->
+                            onSelectLoopMode(mode)
+                        },
+                        onCycleLoopMode = onCycleLoopMode,
+                        onSetPointA = onSetAbLoopPointA,
+                        onSetPointB = onSetAbLoopPointB,
+                        onClearAbPoints = onClearAbLoopPoints,
+                        onClosePopup = { showLoopOptionsPopup = false }
                     )
                 }
 
-                // Compact Transport & Action Row (No Landscape Full button here; detailed options moved to 3-dot menu)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragonGlassSurface(cornerRadiusOverride = 20.dp, elevated = true, accentGlow = true)
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    // Floating Subtitle Resize Toggle Icon
-                    IconButton(
-                        onClick = onToggleFloatingSubtitle,
-                        modifier = Modifier
-                            .size(40.dp)
-                            .testTag("hud_floating_subtitle_button")
+                    // Compact Single-Line Timeline Scrubber Row: [01:24] ----o-------- [12:14]
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Subtitles,
-                            contentDescription = "Floating Subtitle Resize Control",
-                            tint = if (isFloatingSubtitleOpen) scheme.primary else Color.White,
-                            modifier = Modifier.size(21.dp)
+                        Text(
+                            text = StorageScannerHelper.formatDurationMs(currentPositionMs),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = scheme.primary
+                        )
+
+                        Slider(
+                            value = currentPositionMs.toFloat().coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
+                            onValueChange = { onSeekTo(it.toLong()) },
+                            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+                            colors = SliderDefaults.colors(
+                                thumbColor = scheme.primary,
+                                activeTrackColor = scheme.primary,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.22f)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(22.dp)
+                                .testTag("timeline_seek_slider")
+                        )
+
+                        if (loopMode == PlayerLoopMode.AB_REPEAT && loopAbEndMs != null) {
+                            Text(
+                                text = "A-B ${StorageScannerHelper.formatDurationMs(loopAbStartMs)}–${StorageScannerHelper.formatDurationMs(loopAbEndMs)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = scheme.tertiary,
+                                fontFamily = JetBrainsMonoFontFamily
+                            )
+                        }
+
+                        Text(
+                            text = StorageScannerHelper.formatDurationMs(durationMs),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
                         )
                     }
 
-                    // Core Transport Controls
+                    // Re-aligned Transport & Action Row:
+                    // Left side: [Loop Button (BEFORE Subtitle)] + [Subtitle Button]
+                    // Center (Guaranteed Strictly Centered): [Prev] [-10s] [Play/Pause] [+10s] [Next]
+                    // Right side: [Aspect Ratio] + [Enlarged Easy-to-Click 3-Dot Menu]
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(
-                            onClick = onPlayPrevious,
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SkipPrevious,
-                                contentDescription = "Previous video",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { onSeekRelative(-10_000L) },
-                            modifier = Modifier
-                                .size(40.dp)
-                                .testTag("rewind_10s_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Replay10,
-                                contentDescription = "Rewind 10 seconds",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        // Compact Center Play/Pause Button
+                        // Left Controls (Weight 1f ensures equal counter-balance to Right side)
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(scheme.primary, scheme.secondary)
-                                    )
-                                )
-                                .clickable { onTogglePlayPause() }
-                                .testTag("play_pause_button"),
+                                .weight(1f)
+                                .wrapContentHeight(),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                // 1. Loop Button (placed directly before Subtitle button)
+                                val isLoopActive = loopMode != PlayerLoopMode.OFF
+                                val loopIcon = when (loopMode) {
+                                    PlayerLoopMode.LOOP_ONE -> Icons.Default.RepeatOne
+                                    PlayerLoopMode.SHUFFLE_LOOP -> Icons.Default.Shuffle
+                                    else -> Icons.Default.Repeat
+                                }
+                                Surface(
+                                    onClick = { showLoopOptionsPopup = !showLoopOptionsPopup },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isLoopActive || showLoopOptionsPopup) scheme.primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .size(42.dp)
+                                        .testTag("hud_loop_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = loopIcon,
+                                            contentDescription = "Loop Video Options (${loopMode.label})",
+                                            tint = if (isLoopActive || showLoopOptionsPopup) scheme.primary else Color.White,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        if (isLoopActive) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomEnd)
+                                                    .padding(2.dp)
+                                                    .clip(RoundedCornerShape(3.dp))
+                                                    .background(scheme.primary)
+                                                    .padding(horizontal = 2.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = loopMode.shortBadge,
+                                                    fontSize = 7.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = Color.Black
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 2. Floating Subtitle Resize Toggle Icon (right after Loop button)
+                                Surface(
+                                    onClick = onToggleFloatingSubtitle,
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isFloatingSubtitleOpen) scheme.primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .size(42.dp)
+                                        .testTag("hud_floating_subtitle_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Subtitles,
+                                            contentDescription = "Floating Subtitle Resize Control",
+                                            tint = if (isFloatingSubtitleOpen) scheme.primary else Color.White,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Core Transport Controls (Strictly Centered horizontally on screen)
+                        Box(
+                            modifier = Modifier.wrapContentSize(),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = if (isPlaying) "Pause" else "Play",
-                                tint = Color.Black,
-                                modifier = Modifier.size(24.dp)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = onPlayPrevious,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipPrevious,
+                                        contentDescription = "Previous video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = { onSeekRelative(-10_000L) },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .testTag("rewind_10s_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Replay10,
+                                        contentDescription = "Rewind 10 seconds",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                // Prominent Center Play/Pause Button
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            Brush.linearGradient(
+                                                colors = listOf(scheme.primary, scheme.secondary)
+                                            )
+                                        )
+                                        .clickable { onTogglePlayPause() }
+                                        .testTag("play_pause_button"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = if (isPlaying) "Pause" else "Play",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = { onSeekRelative(10_000L) },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .testTag("forward_10s_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Forward10,
+                                        contentDescription = "Forward 10 seconds",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onPlayNext,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipNext,
+                                        contentDescription = "Next video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
                         }
 
-                        IconButton(
-                            onClick = { onSeekRelative(10_000L) },
+                        // Right Controls (Weight 1f ensures equal counter-balance to Left side)
+                        Box(
                             modifier = Modifier
-                                .size(40.dp)
-                                .testTag("forward_10s_button")
+                                .weight(1f)
+                                .wrapContentHeight(),
+                            contentAlignment = Alignment.CenterEnd
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Forward10,
-                                contentDescription = "Forward 10 seconds",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                // Aspect Ratio Button
+                                Surface(
+                                    onClick = onCycleAspectRatio,
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (aspectRatioMode != AspectRatioMode.FIT) scheme.primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .size(42.dp)
+                                        .testTag("hud_aspect_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.AspectRatio,
+                                            contentDescription = "Aspect Ratio (${aspectRatioMode.label})",
+                                            tint = if (aspectRatioMode != AspectRatioMode.FIT) scheme.primary else Color.White,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
 
-                        IconButton(
-                            onClick = onPlayNext,
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SkipNext,
-                                contentDescription = "Next video",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                    }
-
-                    // Right-side Aspect Ratio + 3-Dot More Options Menu
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        IconButton(
-                            onClick = onCycleAspectRatio,
-                            modifier = Modifier
-                                .size(40.dp)
-                                .testTag("hud_aspect_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AspectRatio,
-                                contentDescription = "Aspect Ratio (${aspectRatioMode.label})",
-                                tint = if (aspectRatioMode != AspectRatioMode.FIT) scheme.primary else Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { showThreeDotMenuDialog = true },
-                            modifier = Modifier
-                                .size(40.dp)
-                                .testTag("hud_three_dot_menu_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = "More player options",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
+                                // Enlarged, Easy-to-Click 3-Dot More Options Button
+                                Surface(
+                                    onClick = { showThreeDotMenuDialog = true },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color.White.copy(alpha = 0.12f),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .size(46.dp)
+                                        .testTag("hud_three_dot_menu_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.MoreVert,
+                                            contentDescription = "More player options",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -381,11 +523,13 @@ fun DragonPlayerHudOverlay(
         PlayerThreeDotOptionsDialog(
             video = video,
             playbackSpeed = playbackSpeed,
+            loopMode = loopMode,
             decoderMode = decoderMode,
             backgroundAudioEnabled = backgroundAudioEnabled,
             volumeBoostPercent = volumeBoostPercent,
             isFloatingSubtitleOpen = isFloatingSubtitleOpen,
             onSelectSpeed = onSelectSpeed,
+            onSelectLoopMode = onSelectLoopMode,
             onStepFrame = onStepFrame,
             onToggleFloatingSubtitle = {
                 showThreeDotMenuDialog = false
@@ -415,6 +559,190 @@ fun DragonPlayerHudOverlay(
             },
             onDismiss = { showThreeDotMenuDialog = false }
         )
+    }
+}
+
+@Composable
+private fun PlayerLoopOptionsPanel(
+    currentLoopMode: PlayerLoopMode,
+    loopAbStartMs: Long,
+    loopAbEndMs: Long?,
+    durationMs: Long,
+    onSelectLoopMode: (PlayerLoopMode) -> Unit,
+    onCycleLoopMode: () -> Unit,
+    onSetPointA: () -> Unit,
+    onSetPointB: () -> Unit,
+    onClearAbPoints: () -> Unit,
+    onClosePopup: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .dragonGlassSurface(cornerRadiusOverride = 18.dp, elevated = true, accentGlow = true)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("player_loop_options_panel"),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = when (currentLoopMode) {
+                        PlayerLoopMode.LOOP_ONE -> Icons.Default.RepeatOne
+                        PlayerLoopMode.SHUFFLE_LOOP -> Icons.Default.Shuffle
+                        else -> Icons.Default.Repeat
+                    },
+                    contentDescription = null,
+                    tint = scheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Column {
+                    Text(
+                        text = "Loop Playback Options",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = currentLoopMode.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    onClick = onCycleLoopMode,
+                    shape = RoundedCornerShape(8.dp),
+                    color = scheme.primary.copy(alpha = 0.18f),
+                    modifier = Modifier.testTag("cycle_loop_mode_button")
+                ) {
+                    Text(
+                        text = "Cycle (${currentLoopMode.shortBadge})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onClosePopup,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close Loop Options",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+
+        // Loop Mode Chips Row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PlayerLoopMode.entries.forEach { mode ->
+                val selected = currentLoopMode == mode
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSelectLoopMode(mode) },
+                    label = {
+                        Text(
+                            text = "${mode.label} (${mode.shortBadge})",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = scheme.primary,
+                        selectedLabelColor = Color.Black
+                    ),
+                    modifier = Modifier.testTag("loop_mode_chip_${mode.name.lowercase()}")
+                )
+            }
+        }
+
+        // Custom A-B Segment Loop Controls Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "A–B Segment: ${StorageScannerHelper.formatDurationMs(loopAbStartMs)} → ${
+                    StorageScannerHelper.formatDurationMs(loopAbEndMs ?: durationMs)
+                }",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (currentLoopMode == PlayerLoopMode.AB_REPEAT) scheme.primary else scheme.onSurfaceVariant,
+                fontFamily = JetBrainsMonoFontFamily
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Surface(
+                    onClick = onSetPointA,
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.White.copy(alpha = 0.10f),
+                    modifier = Modifier.testTag("set_loop_point_a_button")
+                ) {
+                    Text(
+                        text = "Set A",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+
+                Surface(
+                    onClick = onSetPointB,
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.White.copy(alpha = 0.10f),
+                    modifier = Modifier.testTag("set_loop_point_b_button")
+                ) {
+                    Text(
+                        text = "Set B",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.tertiary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+
+                if (loopAbEndMs != null || currentLoopMode == PlayerLoopMode.AB_REPEAT) {
+                    Surface(
+                        onClick = onClearAbPoints,
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFFFF4D6D).copy(alpha = 0.16f),
+                        modifier = Modifier.testTag("clear_ab_loop_button")
+                    ) {
+                        Text(
+                            text = "Clear A-B",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFF4D6D),
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -451,11 +779,13 @@ private fun FloatingUpperIconCircle(
 private fun PlayerThreeDotOptionsDialog(
     video: VideoEntity,
     playbackSpeed: Float,
+    loopMode: PlayerLoopMode,
     decoderMode: DecoderMode,
     backgroundAudioEnabled: Boolean,
     volumeBoostPercent: Int,
     isFloatingSubtitleOpen: Boolean,
     onSelectSpeed: (Float) -> Unit,
+    onSelectLoopMode: (PlayerLoopMode) -> Unit,
     onStepFrame: (forward: Boolean) -> Unit,
     onToggleFloatingSubtitle: () -> Unit,
     onOpenSubtitleStudio: () -> Unit,
@@ -534,6 +864,46 @@ private fun PlayerThreeDotOptionsDialog(
                             selected = selected,
                             onClick = { onSelectSpeed(spd) },
                             label = { Text("${spd}x", style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = scheme.primary,
+                                selectedLabelColor = Color.Black
+                            )
+                        )
+                    }
+                }
+            }
+
+            // 1B. Loop Mode Selector
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Default.Repeat, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(18.dp))
+                        Text("Loop Mode", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                    }
+                    Text(
+                        text = loopMode.label,
+                        fontFamily = JetBrainsMonoFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        color = scheme.primary
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    PlayerLoopMode.entries.forEach { mode ->
+                        val selected = loopMode == mode
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectLoopMode(mode) },
+                            label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = scheme.primary,
                                 selectedLabelColor = Color.Black

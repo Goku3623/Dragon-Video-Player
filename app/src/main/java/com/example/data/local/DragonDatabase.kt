@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [VideoEntity::class, PlaylistEntity::class],
-    version = 3,
+    entities = [VideoEntity::class, PlaylistEntity::class, StreamBookmarkEntity::class],
+    version = 4,
     exportSchema = false
 )
 abstract class DragonDatabase : RoomDatabase() {

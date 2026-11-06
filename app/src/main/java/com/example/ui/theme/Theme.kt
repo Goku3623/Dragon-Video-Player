@@ -32,7 +32,13 @@ data class DragonThemeConfig(
     val glowIntensity: Float = 0.75f,
     val hudCornerRadiusDp: Float = 18f,
     val backdropBlurStrength: Float = 0.72f,
-    val showDragonScalePattern: Boolean = true
+    val showDragonScalePattern: Boolean = true,
+    val borderStyle: DragonBorderStyle = DragonBorderStyle.NEON_GRADIENT,
+    val notifPanelStyle: DragonNotifPanelStyle = DragonNotifPanelStyle.SPECTRUM_BARS,
+    val neonBorderWidthDp: Float = 1.3f,
+    val surfaceOpacity: Float = 0.80f,
+    val useTrueOledBlack: Boolean = false,
+    val enableAnimatedAura: Boolean = true
 ) {
     val activePrimary: Color
         get() = if (useCustomAccent) hueToColor(customAccentHue, 0.88f, 1.0f) else preset.primaryAccent
@@ -42,6 +48,12 @@ data class DragonThemeConfig(
 
     val activeTertiaryGlow: Color
         get() = if (useCustomAccent) hueToColor((customAccentHue + 64f) % 360f, 0.85f, 1.0f) else preset.tertiaryGlow
+
+    val effectiveBackground: Color
+        get() = if (useTrueOledBlack) Color(0xFF000000) else preset.background
+
+    val effectiveSurface: Color
+        get() = if (useTrueOledBlack) Color(0xFF06060A) else preset.surface
 }
 
 val LocalDragonThemeConfig = staticCompositionLocalOf { DragonThemeConfig() }
@@ -56,15 +68,13 @@ fun DragonVideoPlayerTheme(
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     ) {
         val dynamic = dynamicDarkColorScheme(context)
-        if (themeConfig.useCustomAccent) {
-            dynamic.copy(
-                primary = themeConfig.activePrimary,
-                secondary = themeConfig.activeSecondary,
-                tertiary = themeConfig.activeTertiaryGlow
-            )
-        } else {
-            dynamic
-        }
+        dynamic.copy(
+            primary = if (themeConfig.useCustomAccent) themeConfig.activePrimary else dynamic.primary,
+            secondary = if (themeConfig.useCustomAccent) themeConfig.activeSecondary else dynamic.secondary,
+            tertiary = if (themeConfig.useCustomAccent) themeConfig.activeTertiaryGlow else dynamic.tertiary,
+            background = if (themeConfig.useTrueOledBlack) Color.Black else dynamic.background,
+            surface = if (themeConfig.useTrueOledBlack) Color(0xFF07070B) else dynamic.surface
+        )
     } else {
         darkColorScheme(
             primary = themeConfig.activePrimary,
@@ -76,9 +86,9 @@ fun DragonVideoPlayerTheme(
             secondaryContainer = themeConfig.activeSecondary.copy(alpha = 0.2f),
             onSecondaryContainer = themeConfig.preset.onBackground,
             tertiary = themeConfig.activeTertiaryGlow,
-            background = themeConfig.preset.background,
+            background = themeConfig.effectiveBackground,
             onBackground = themeConfig.preset.onBackground,
-            surface = themeConfig.preset.surface,
+            surface = themeConfig.effectiveSurface,
             onSurface = themeConfig.preset.onBackground,
             surfaceVariant = themeConfig.preset.surfaceElevated,
             onSurfaceVariant = themeConfig.preset.onSurfaceVariant,
@@ -118,9 +128,41 @@ fun Modifier.dragonGlassSurface(
     val scheme = MaterialTheme.colorScheme
     val cornerRadius = cornerRadiusOverride ?: config.hudCornerRadiusDp.dp
     val shape = RoundedCornerShape(cornerRadius)
-    val baseAlpha = (0.48f + config.backdropBlurStrength * 0.44f).coerceIn(0.45f, 0.94f)
+    val baseAlpha = (config.surfaceOpacity * (0.75f + config.backdropBlurStrength * 0.25f)).coerceIn(0.38f, 0.97f)
     val surfaceColor = if (elevated) scheme.surfaceVariant.copy(alpha = baseAlpha) else scheme.surface.copy(alpha = baseAlpha)
-    val glowAlpha = (config.glowIntensity * (if (accentGlow) 0.55f else 0.28f)).coerceIn(0.05f, 0.85f)
+    val glowAlpha = (config.glowIntensity * (if (accentGlow) 0.68f else 0.32f)).coerceIn(0.05f, 0.92f)
+    val rimWidth = (config.neonBorderWidthDp * (if (accentGlow) 1.15f else 0.85f)).coerceIn(0.4f, 4.0f).dp
+
+    val borderBrush = when (config.borderStyle) {
+        DragonBorderStyle.NEON_GRADIENT -> Brush.linearGradient(
+            colors = listOf(
+                scheme.primary.copy(alpha = glowAlpha),
+                scheme.tertiary.copy(alpha = glowAlpha * 0.55f),
+                scheme.secondary.copy(alpha = glowAlpha * 0.80f)
+            )
+        )
+        DragonBorderStyle.CYBER_PRISM -> Brush.sweepGradient(
+            colors = listOf(
+                scheme.primary.copy(alpha = glowAlpha),
+                scheme.secondary.copy(alpha = glowAlpha),
+                scheme.tertiary.copy(alpha = glowAlpha * 0.85f),
+                scheme.primary.copy(alpha = glowAlpha)
+            )
+        )
+        DragonBorderStyle.FROSTED_GLASS -> Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = (0.28f * config.backdropBlurStrength).coerceIn(0.08f, 0.45f)),
+                scheme.primary.copy(alpha = glowAlpha * 0.35f),
+                Color.White.copy(alpha = 0.08f)
+            )
+        )
+        DragonBorderStyle.MINIMAL_STEALTH -> Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.10f),
+                scheme.primary.copy(alpha = glowAlpha * 0.22f)
+            )
+        )
+    }
 
     return this
         .clip(shape)
@@ -128,8 +170,8 @@ fun Modifier.dragonGlassSurface(
             brush = Brush.linearGradient(
                 colors = listOf(
                     surfaceColor,
-                    scheme.surface.copy(alpha = (baseAlpha - 0.08f).coerceAtLeast(0.35f)),
-                    if (accentGlow) scheme.primary.copy(alpha = 0.08f * config.glowIntensity) else surfaceColor
+                    scheme.surface.copy(alpha = (baseAlpha - 0.08f).coerceAtLeast(0.32f)),
+                    if (accentGlow) scheme.primary.copy(alpha = 0.10f * config.glowIntensity) else surfaceColor
                 )
             ),
             shape = shape
@@ -139,24 +181,30 @@ fun Modifier.dragonGlassSurface(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            scheme.primary.copy(alpha = 0.18f * config.glowIntensity),
+                            scheme.primary.copy(alpha = 0.20f * config.glowIntensity),
                             Color.Transparent
                         ),
                         center = Offset(size.width * 0.85f, size.height * 0.15f),
-                        radius = size.maxDimension * 0.7f
+                        radius = size.maxDimension * 0.72f
                     )
                 )
+                if (config.enableAnimatedAura) {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                scheme.secondary.copy(alpha = 0.14f * config.glowIntensity),
+                                Color.Transparent
+                            ),
+                            center = Offset(size.width * 0.15f, size.height * 0.85f),
+                            radius = size.maxDimension * 0.55f
+                        )
+                    )
+                }
             }
         }
         .border(
-            width = if (accentGlow) 1.2.dp else 1.dp,
-            brush = Brush.linearGradient(
-                colors = listOf(
-                    scheme.primary.copy(alpha = glowAlpha),
-                    Color.White.copy(alpha = 0.12f * config.backdropBlurStrength),
-                    scheme.secondary.copy(alpha = glowAlpha * 0.65f)
-                )
-            ),
+            width = rimWidth,
+            brush = borderBrush,
             shape = shape
         )
 }

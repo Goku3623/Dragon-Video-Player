@@ -22,21 +22,30 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WifiTethering
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,8 +58,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.local.PlaylistEntity
+import com.example.data.local.StreamBookmarkEntity
 import com.example.data.local.VideoEntity
 import com.example.domain.model.CodecCapabilitySpec
 import com.example.domain.model.DecoderMode
@@ -279,19 +290,31 @@ fun PlaylistsScreenContent(
 }
 
 /**
- * Dedicated Network Stream Screen (separate from Codec section, accessed inside More).
+ * Dedicated Network Stream Screen with Video Stream Bookmarks and Recent Streams.
  */
 @Composable
 fun NetworkStreamScreenContent(
     savedStreams: List<VideoEntity>,
+    streamBookmarks: List<StreamBookmarkEntity>,
     onBackToMore: () -> Unit,
     onLaunchNetworkStream: (title: String, url: String, protocol: String) -> Unit,
+    onSaveStreamBookmark: (title: String, url: String, protocol: String) -> Unit,
+    onPlayBookmarkedStream: (StreamBookmarkEntity) -> Unit,
+    onRemoveStreamBookmark: (StreamBookmarkEntity) -> Unit,
     onPlaySavedStream: (VideoEntity) -> Unit,
+    onResetRecentStreams: () -> Unit,
+    onRemoveStream: (VideoEntity) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var customTitle by remember { mutableStateOf("") }
     var customUrl by remember { mutableStateOf("") }
     var selectedProtocol by remember { mutableStateOf("HLS (.m3u8)") }
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
+    var showAddBookmarkDialog by remember { mutableStateOf(false) }
+    var dialogBookmarkTitle by remember { mutableStateOf("") }
+    var dialogBookmarkUrl by remember { mutableStateOf("") }
+    var dialogBookmarkProtocol by remember { mutableStateOf("HLS (.m3u8)") }
+
     val protocols = listOf("HLS (.m3u8)", "DASH (.mpd)", "SmoothStreaming", "RTSP", "HTTP Direct")
     val scheme = MaterialTheme.colorScheme
 
@@ -305,11 +328,12 @@ fun NetworkStreamScreenContent(
         item {
             MoreSubScreenHeader(
                 title = "Network Stream",
-                subtitle = "Play HLS (.m3u8), DASH (.mpd), SmoothStreaming, RTSP & HTTP links",
+                subtitle = "Play & bookmark HLS (.m3u8), DASH (.mpd), RTSP & HTTP video links",
                 onBack = onBackToMore
             )
         }
 
+        // Direct Stream URL Player & Save Bookmark Card
         item {
             Column(
                 modifier = Modifier
@@ -320,15 +344,34 @@ fun NetworkStreamScreenContent(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.WifiTethering, contentDescription = null, tint = scheme.primary)
-                    Text(
-                        text = "Direct Stream URL Player",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.WifiTethering, contentDescription = null, tint = scheme.primary)
+                        Text(
+                            text = "Direct Stream URL Player",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White
+                        )
+                    }
+                    if (customTitle.isNotEmpty() || customUrl.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                customTitle = ""
+                                customUrl = ""
+                            },
+                            modifier = Modifier.testTag("clear_stream_fields_button")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Reset Fields", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Clear")
+                        }
+                    }
                 }
 
                 Row(
@@ -354,7 +397,9 @@ fun NetworkStreamScreenContent(
                     label = { Text("Stream Name (Optional)") },
                     placeholder = { Text("e.g., Live Sports Channel / Media Server") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("stream_title_input")
                 )
 
                 OutlinedTextField(
@@ -368,33 +413,327 @@ fun NetworkStreamScreenContent(
                         .testTag("stream_url_input")
                 )
 
-                Button(
-                    onClick = {
-                        if (customUrl.isNotBlank()) {
-                            onLaunchNetworkStream(customTitle, customUrl, selectedProtocol)
-                        }
-                    },
-                    enabled = customUrl.isNotBlank(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("play_network_stream_button")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Connect & Play Stream")
+                    Button(
+                        onClick = {
+                            if (customUrl.isNotBlank()) {
+                                onLaunchNetworkStream(customTitle, customUrl, selectedProtocol)
+                            }
+                        },
+                        enabled = customUrl.isNotBlank(),
+                        modifier = Modifier
+                            .weight(1.35f)
+                            .testTag("play_network_stream_button")
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Connect & Play")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            if (customUrl.isNotBlank()) {
+                                onSaveStreamBookmark(customTitle, customUrl, selectedProtocol)
+                            }
+                        },
+                        enabled = customUrl.isNotBlank(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("bookmark_stream_url_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BookmarkAdd,
+                            contentDescription = "Save Video Link Bookmark",
+                            tint = scheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Bookmark")
+                    }
                 }
             }
         }
 
-        if (savedStreams.isNotEmpty()) {
-            item {
-                Text(
-                    text = "Recent Network Streams",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White
-                )
+        // Video Bookmarks Section Header
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bookmarks,
+                        contentDescription = null,
+                        tint = scheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Video Stream Bookmarks",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (streamBookmarks.isEmpty()) {
+                                "Save video links for instant 1-tap streaming"
+                            } else {
+                                "${streamBookmarks.size} bookmarked video link(s)"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        dialogBookmarkTitle = customTitle
+                        dialogBookmarkUrl = customUrl
+                        dialogBookmarkProtocol = selectedProtocol
+                        showAddBookmarkDialog = true
+                    },
+                    modifier = Modifier.testTag("open_add_bookmark_dialog_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BookmarkAdd,
+                        contentDescription = "New Video Bookmark",
+                        tint = scheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text("Add Link")
+                }
             }
+        }
+
+        if (streamBookmarks.isEmpty()) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragonGlassSurface(elevated = false)
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bookmark,
+                        contentDescription = null,
+                        tint = scheme.primary.copy(alpha = 0.72f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Text(
+                        text = "No Video Bookmarks Saved Yet",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Enter a stream link above and tap 'Bookmark' or 'Add Link' to save your favorite video URLs for quick streaming.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            items(streamBookmarks, key = { "bookmark_${it.id}" }) { bookmark ->
+                Surface(
+                    onClick = { onPlayBookmarkedStream(bookmark) },
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.Transparent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragonGlassSurface(elevated = true, accentGlow = true)
+                        .testTag("stream_bookmark_item_${bookmark.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(scheme.primary.copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Bookmark,
+                                    contentDescription = null,
+                                    tint = scheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = bookmark.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${bookmark.protocol} • ${bookmark.url}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = scheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                onClick = { onPlayBookmarkedStream(bookmark) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = scheme.primary,
+                                modifier = Modifier.testTag("play_bookmark_button_${bookmark.id}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Stream bookmarked link",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Stream",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.Black
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                onClick = { onRemoveStreamBookmark(bookmark) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xFFFF4D6D).copy(alpha = 0.16f),
+                                modifier = Modifier.testTag("remove_bookmark_button_${bookmark.id}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Remove bookmark link",
+                                        tint = Color(0xFFFF4D6D),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Remove",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFFF4D6D)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recent Network Streams Section Header
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Recent Network Streams",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                    Text(
+                        text = if (savedStreams.isEmpty()) "No saved stream history" else "${savedStreams.size} recent stream(s)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.onSurfaceVariant
+                    )
+                }
+
+                if (savedStreams.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = { showResetConfirmDialog = true },
+                        modifier = Modifier.testTag("reset_recent_streams_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = "Reset Recent Network Streams",
+                            tint = scheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Reset Recent")
+                    }
+                }
+            }
+        }
+
+        if (savedStreams.isEmpty()) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragonGlassSurface(elevated = false)
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.WifiTethering,
+                        contentDescription = null,
+                        tint = scheme.primary.copy(alpha = 0.7f),
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Text(
+                        text = "No Recent Network Streams",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Streams you play will appear here for quick 1-tap reconnection.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        } else {
             items(savedStreams, key = { it.id }) { streamVideo ->
+                val isAlreadyBookmarked = streamBookmarks.any {
+                    it.url.equals(streamVideo.uri, ignoreCase = true)
+                }
                 Surface(
                     onClick = { onPlaySavedStream(streamVideo) },
                     shape = RoundedCornerShape(14.dp),
@@ -402,6 +741,7 @@ fun NetworkStreamScreenContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .dragonGlassSurface(elevated = false)
+                        .testTag("recent_stream_item_${streamVideo.id}")
                 ) {
                     Row(
                         modifier = Modifier.padding(14.dp),
@@ -409,24 +749,169 @@ fun NetworkStreamScreenContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(streamVideo.title, style = MaterialTheme.typography.titleMedium, color = Color.White)
+                            Text(
+                                text = streamVideo.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 text = "${streamVideo.streamProtocol} • ${streamVideo.uri}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = scheme.onSurfaceVariant,
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Play stream", tint = scheme.primary)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    onSaveStreamBookmark(
+                                        streamVideo.title,
+                                        streamVideo.uri,
+                                        streamVideo.streamProtocol.ifBlank { "HLS (.m3u8)" }
+                                    )
+                                },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("bookmark_recent_stream_${streamVideo.id}")
+                            ) {
+                                Icon(
+                                    imageVector = if (isAlreadyBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkAdd,
+                                    contentDescription = "Bookmark this stream link",
+                                    tint = if (isAlreadyBookmarked) scheme.primary else scheme.onSurfaceVariant,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { onPlaySavedStream(streamVideo) },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Play stream",
+                                    tint = scheme.primary
+                                )
+                            }
+                            IconButton(
+                                onClick = { onRemoveStream(streamVideo) },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("remove_stream_button_${streamVideo.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Remove from recent streams",
+                                    tint = scheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    if (showAddBookmarkDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddBookmarkDialog = false },
+            title = { Text("Save Video Stream Bookmark") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = dialogBookmarkTitle,
+                        onValueChange = { dialogBookmarkTitle = it },
+                        label = { Text("Bookmark Name") },
+                        placeholder = { Text("e.g., 4K Cinema Stream") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("dialog_bookmark_title_input")
+                    )
+                    OutlinedTextField(
+                        value = dialogBookmarkUrl,
+                        onValueChange = { dialogBookmarkUrl = it },
+                        label = { Text("Video Stream URL") },
+                        placeholder = { Text("https://example.com/stream.m3u8") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("dialog_bookmark_url_input")
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        protocols.forEach { protocol ->
+                            FilterChip(
+                                selected = dialogBookmarkProtocol == protocol,
+                                onClick = { dialogBookmarkProtocol = protocol },
+                                label = { Text(protocol) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (dialogBookmarkUrl.isNotBlank()) {
+                            onSaveStreamBookmark(
+                                dialogBookmarkTitle,
+                                dialogBookmarkUrl,
+                                dialogBookmarkProtocol
+                            )
+                            showAddBookmarkDialog = false
+                        }
+                    },
+                    enabled = dialogBookmarkUrl.isNotBlank(),
+                    modifier = Modifier.testTag("confirm_save_bookmark_button")
+                ) {
+                    Text("Save Bookmark")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddBookmarkDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showResetConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirmDialog = false },
+            title = { Text("Reset Recent Network Streams?") },
+            text = {
+                Text("This will clear all ${savedStreams.size} saved network stream URLs from your history.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showResetConfirmDialog = false
+                        onResetRecentStreams()
+                    },
+                    modifier = Modifier.testTag("confirm_reset_streams_button")
+                ) {
+                    Text("Reset All")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 /**
- * Dedicated Codec & Decoder Engine Screen (separate from Network Stream, accessed inside More).
+ * Compact Codec & Decoder Engine Screen inside More.
  */
 @Composable
 fun CodecEngineScreenContent(
@@ -442,115 +927,164 @@ fun CodecEngineScreenContent(
         modifier = modifier
             .fillMaxSize()
             .testTag("codec_engine_lazy_column"),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
             MoreSubScreenHeader(
-                title = "Codec & Decoder Engine",
-                subtitle = "Hardware acceleration & bundled FFmpeg / libvpx / libdav1d / Opus software decoders",
+                title = "Codec & Decoder",
+                subtitle = "Compact HW+ / FFmpeg / libvpx / dav1d / Opus pipeline",
                 onBack = onBackToMore
             )
         }
 
+        // Compact Segmented 3-Pill Decoder Selector
         item {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .dragonGlassSurface(elevated = true)
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Memory, contentDescription = null, tint = scheme.primary)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = scheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Active Decoder Pipeline",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White
+                        )
+                    }
                     Text(
-                        text = "Decoder Pipeline Selection",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White
+                        text = decoderMode.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.primary
                     )
                 }
 
-                DecoderMode.entries.forEach { mode ->
-                    val selected = decoderMode == mode
-                    Surface(
-                        onClick = { onSelectDecoderMode(mode) },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) scheme.primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("decoder_mode_${mode.name.lowercase()}")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DecoderMode.entries.forEach { mode ->
+                        val selected = decoderMode == mode
+                        Surface(
+                            onClick = { onSelectDecoderMode(mode) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) scheme.primary else Color.White.copy(alpha = 0.06f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("decoder_mode_${mode.name.lowercase()}")
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (selected) scheme.primary else Color.White.copy(alpha = 0.14f))
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            Column(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
                                     text = mode.badge,
                                     style = MaterialTheme.typography.labelLarge,
-                                    color = if (selected) Color.Black else Color.White,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) Color.Black else Color.White
                                 )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(mode.label, style = MaterialTheme.typography.titleMedium, color = Color.White)
-                                Text(mode.description, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+                                Text(
+                                    text = mode.label.substringBefore(" "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (selected) Color.Black.copy(alpha = 0.78f) else scheme.onSurfaceVariant,
+                                    maxLines = 1
+                                )
                             }
                         }
                     }
                 }
+
+                Text(
+                    text = decoderMode.description,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.onSurfaceVariant
+                )
             }
         }
 
+        // Compact 2-Column Bundled Codec & Container Grid
         item {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 4.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(Icons.Default.DeveloperBoard, contentDescription = null, tint = scheme.tertiary)
+                Icon(
+                    imageVector = Icons.Default.DeveloperBoard,
+                    contentDescription = null,
+                    tint = scheme.tertiary,
+                    modifier = Modifier.size(16.dp)
+                )
                 Text(
-                    text = "Bundled Codec & Format Matrix",
-                    style = MaterialTheme.typography.titleLarge,
+                    text = "Bundled Codec Matrix (${codecSpecs.size} Active)",
+                    style = MaterialTheme.typography.titleSmall,
                     color = Color.White
                 )
             }
         }
 
-        items(codecSpecs) { spec ->
+        items(codecSpecs.chunked(2)) { rowPair ->
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .dragonGlassSurface(elevated = false)
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = if (spec.isHardwareAccelerated) scheme.primary else scheme.tertiary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                rowPair.forEach { spec ->
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .dragonGlassSurface(elevated = false)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        Text(spec.name, style = MaterialTheme.typography.titleMedium, color = Color.White)
-                        Text(spec.category, style = MaterialTheme.typography.labelSmall, color = scheme.primary)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = spec.category,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (spec.isHardwareAccelerated) scheme.primary else scheme.tertiary
+                            )
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = if (spec.isHardwareAccelerated) scheme.primary else scheme.tertiary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                        Text(
+                            text = spec.name,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = spec.engine,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
                     }
-                    Text(spec.engine, style = MaterialTheme.typography.labelMedium, color = scheme.tertiary)
-                    Text(spec.details, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+                }
+                if (rowPair.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
         }

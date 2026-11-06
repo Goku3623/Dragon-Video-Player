@@ -59,9 +59,17 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Refresh
 import com.example.data.local.VideoEntity
 import com.example.domain.model.DecoderMode
 import com.example.player.StorageScannerHelper
+import com.example.ui.theme.DragonBorderStyle
+import com.example.ui.theme.DragonNotifPanelStyle
 import com.example.ui.theme.DragonThemeConfig
 import com.example.ui.theme.DragonThemePreset
 import com.example.ui.theme.dragonGlassSurface
@@ -83,6 +91,7 @@ fun MoreHubScreenContent(
     trashVideoCount: Int,
     backgroundAudioEnabled: Boolean,
     onOpenSubSection: (MoreSubSection) -> Unit,
+    onSelectDecoderMode: (DecoderMode) -> Unit,
     onToggleBackgroundAudio: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -174,55 +183,52 @@ fun MoreHubScreenContent(
             )
         }
 
-        // 5. Codec & Decoder Engine Section Card (Separate from Network Stream)
+        // 5. Compact Codec & Decoder Quick Bar (Smaller & Compact with inline HW+/HW/SW switcher)
         item {
-            MoreFeatureSectionCard(
-                icon = Icons.Default.DeveloperBoard,
-                title = "Codec & Decoder Engine",
-                badge = "Engine ${decoderMode.badge}",
-                description = "Configure Hardware+ acceleration and bundled FFmpeg, libvpx, libdav1d, Opus & FLAC decoders",
-                accentColor = scheme.primary,
-                onClick = { onOpenSubSection(MoreSubSection.CODEC_ENGINE) },
-                testTag = "more_card_codec_engine"
+            CompactCodecDecoderMoreBar(
+                decoderMode = decoderMode,
+                onSelectDecoderMode = onSelectDecoderMode,
+                onOpenCodecMatrix = { onOpenSubSection(MoreSubSection.CODEC_ENGINE) }
             )
         }
 
-        // 6. Background Audio Playback Quick Setting
+        // 6. Background Audio Playback Quick Setting (Compact)
         item {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .dragonGlassSurface(elevated = false)
-                    .padding(16.dp),
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
                             .background(scheme.primary.copy(alpha = 0.16f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Headphones,
                             contentDescription = null,
-                            tint = scheme.primary
+                            tint = scheme.primary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                     Column {
                         Text(
-                            text = "Background Audio Playback",
+                            text = "Background Audio & Theme Notification",
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White
                         )
                         Text(
-                            text = "Continue audio playback when minimizing player or locking screen",
+                            text = "Play video as background audio with theme-styled notification deck",
                             style = MaterialTheme.typography.bodySmall,
                             color = scheme.onSurfaceVariant
                         )
@@ -233,6 +239,90 @@ fun MoreHubScreenContent(
                     onCheckedChange = onToggleBackgroundAudio
                 )
             }
+        }
+    }
+}
+
+/**
+ * Smaller, compact Codec & Decoder bar in the More section with inline 1-tap mode pills (HW+, HW, SW)
+ * and a compact Matrix button.
+ */
+@Composable
+private fun CompactCodecDecoderMoreBar(
+    decoderMode: DecoderMode,
+    onSelectDecoderMode: (DecoderMode) -> Unit,
+    onOpenCodecMatrix: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .dragonGlassSurface(elevated = false, accentGlow = false)
+            .clickable { onOpenCodecMatrix() }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .testTag("more_card_codec_engine"),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(scheme.primary.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeveloperBoard,
+                    contentDescription = "Codec & Decoder",
+                    tint = scheme.primary,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+            Column {
+                Text(
+                    text = "Codec & Decoder",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White
+                )
+                Text(
+                    text = "FFmpeg • HEVC • AV1 • DTS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            DecoderMode.entries.forEach { mode ->
+                val active = decoderMode == mode
+                Surface(
+                    onClick = { onSelectDecoderMode(mode) },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (active) scheme.primary else Color.White.copy(alpha = 0.08f)
+                ) {
+                    Text(
+                        text = mode.badge,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (active) Color.Black else Color.White,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "Open Codec Matrix",
+                tint = scheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -780,6 +870,16 @@ fun ThemeCustomizerScreenContent(
     modifier: Modifier = Modifier
 ) {
     val scheme = MaterialTheme.colorScheme
+    val quickHueSwatches = listOf(
+        "Crimson" to 348f,
+        "Flame" to 22f,
+        "Solar Gold" to 45f,
+        "Emerald" to 145f,
+        "Cyber Cyan" to 188f,
+        "Electric Blue" to 220f,
+        "Ultraviolet" to 278f,
+        "Plasma Pink" to 318f
+    )
 
     LazyColumn(
         modifier = modifier
@@ -789,68 +889,125 @@ fun ThemeCustomizerScreenContent(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            MoreSubScreenHeader(
-                title = "Theme Studio",
-                subtitle = "Dynamic Dragon presets, neon glow, HUD border radius & backdrop blur",
-                onBack = onBackToMore
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    MoreSubScreenHeader(
+                        title = "Theme Studio",
+                        subtitle = "7 Dragon palettes, notification deck styles, border shaders & OLED controls",
+                        onBack = onBackToMore
+                    )
+                }
+            }
         }
 
-        // Live HUD Preview Card
+        // Live Interactive HUD & Background Notification Style Preview Card
         item {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .dragonGlassSurface(elevated = true, accentGlow = true)
                     .dragonScaleMesh(scaleAlpha = 0.12f)
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Box(
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "LIVE THEME & NOTIFICATION PREVIEW",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.primary
+                        )
+                        Text(
+                            text = "${themeConfig.preset.title} • ${themeConfig.borderStyle.label}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { onUpdateTheme { DragonThemeConfig() } },
+                        modifier = Modifier.testTag("reset_theme_defaults_button")
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Reset", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+
+                // Simulated Live Background Audio Notification Preview Strip
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .dragonGlassSurface(elevated = false, accentGlow = true)
-                        .padding(14.dp)
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Column {
-                            Text("LIVE HUD PREVIEW", style = MaterialTheme.typography.labelSmall, color = scheme.primary)
-                            Text(
-                                text = themeConfig.preset.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = Color.White
-                            )
-                        }
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(themeConfig.hudCornerRadiusDp.dp))
+                                .size(38.dp)
+                                .clip(RoundedCornerShape((themeConfig.hudCornerRadiusDp * 0.6f).dp))
                                 .background(
-                                    Brush.horizontalGradient(
+                                    Brush.linearGradient(
                                         listOf(scheme.primary, scheme.secondary)
                                     )
-                                )
-                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                ),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Radius ${themeConfig.hudCornerRadiusDp.toInt()}dp • Glow ${(themeConfig.glowIntensity * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.Black,
-                                fontWeight = FontWeight.Bold
+                            Icon(
+                                imageVector = Icons.Default.GraphicEq,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
+                        Column {
+                            Text(
+                                text = "Background Audio Deck (${themeConfig.notifPanelStyle.label})",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Radius ${themeConfig.hudCornerRadiusDp.toInt()}dp • Rim ${"%.1f".format(themeConfig.neonBorderWidthDp)}dp • Glow ${(themeConfig.glowIntensity * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = scheme.tertiary
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(scheme.primary.copy(alpha = 0.22f))
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            text = if (themeConfig.useTrueOledBlack) "OLED BLACK" else "GLASS HUD",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = scheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
         }
 
-        // 1. Dynamic Theme Presets
+        // 1. Signature Dragon Presets (7 Palettes)
         item {
             Text(
-                text = "Signature Dragon Presets",
+                text = "1. Signature Dragon Palettes (7 Themes)",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White
             )
@@ -868,15 +1025,15 @@ fun ThemeCustomizerScreenContent(
                     .testTag("theme_preset_${preset.name.lowercase()}")
             ) {
                 Row(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy((-7).dp)) {
                         listOf(preset.primaryAccent, preset.secondaryAccent, preset.tertiaryGlow).forEach { c ->
                             Box(
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(26.dp)
                                     .clip(CircleShape)
                                     .background(c)
                                     .border(1.5.dp, Color.Black, CircleShape)
@@ -898,32 +1055,184 @@ fun ThemeCustomizerScreenContent(
                     }
 
                     if (selected) {
-                        Text(
-                            text = "ACTIVE",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = scheme.primary
-                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(scheme.primary)
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "ACTIVE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Black,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // 2. Real-Time Glassmorphism & Glow Sliders
+        // 2. Background Audio Notification Panel Style
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .dragonGlassSurface(elevated = true)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.Headphones, contentDescription = null, tint = scheme.primary)
+                    Column {
+                        Text(
+                            text = "2. Background Audio Notification Panel Style",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Changes the visual deck & system notification when playing video as background audio",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                DragonNotifPanelStyle.entries.chunked(2).forEach { rowStyles ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        rowStyles.forEach { styleItem ->
+                            val active = themeConfig.notifPanelStyle == styleItem
+                            Surface(
+                                onClick = { onUpdateTheme { it.copy(notifPanelStyle = styleItem) } },
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (active) scheme.primary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .border(
+                                        width = if (active) 1.4.dp else 0.8.dp,
+                                        color = if (active) scheme.primary else Color.White.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                    .testTag("notif_style_${styleItem.name.lowercase()}")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = styleItem.label,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (active) scheme.primary else Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = styleItem.description,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = scheme.onSurfaceVariant,
+                                        maxLines = 2
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Neon Rim & Border Shader Architecture
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .dragonGlassSurface(elevated = true)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = scheme.tertiary)
+                    Column {
+                        Text(
+                            text = "3. Neon Border & Rim Shader Style",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Customize how card borders and player overlays catch the light",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                DragonBorderStyle.entries.chunked(2).forEach { rowBorders ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        rowBorders.forEach { borderItem ->
+                            val active = themeConfig.borderStyle == borderItem
+                            Surface(
+                                onClick = { onUpdateTheme { it.copy(borderStyle = borderItem) } },
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (active) scheme.secondary.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .border(
+                                        width = if (active) 1.4.dp else 0.8.dp,
+                                        color = if (active) scheme.secondary else Color.White.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                    .testTag("border_style_${borderItem.name.lowercase()}")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = borderItem.label,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (active) scheme.secondary else Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = borderItem.description,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = scheme.onSurfaceVariant,
+                                        maxLines = 2
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Real-Time Glassmorphism, OLED & Glow Sliders
         item {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .dragonGlassSurface(elevated = true)
                     .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = scheme.primary)
+                    Icon(Icons.Default.Palette, contentDescription = null, tint = scheme.primary)
                     Text(
-                        text = "Real-Time HUD & Shader Controls",
+                        text = "4. Real-Time Shader, Color & OLED Controls",
                         style = MaterialTheme.typography.titleMedium,
                         color = Color.White
                     )
@@ -939,6 +1248,46 @@ fun ThemeCustomizerScreenContent(
                         checked = themeConfig.useCustomAccent,
                         onCheckedChange = { enabled -> onUpdateTheme { it.copy(useCustomAccent = enabled) } }
                     )
+                }
+
+                // Quick Accent Swatch Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    quickHueSwatches.forEach { (label, hue) ->
+                        val swatchColor = hueToColor(hue)
+                        Surface(
+                            onClick = {
+                                onUpdateTheme {
+                                    it.copy(useCustomAccent = true, customAccentHue = hue)
+                                }
+                            },
+                            shape = RoundedCornerShape(50),
+                            color = Color.White.copy(alpha = 0.07f),
+                            modifier = Modifier.border(
+                                width = 1.dp,
+                                color = swatchColor.copy(alpha = 0.7f),
+                                shape = RoundedCornerShape(50)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .clip(CircleShape)
+                                        .background(swatchColor)
+                                )
+                                Text(label, style = MaterialTheme.typography.labelSmall, color = Color.White)
+                            }
+                        }
+                    }
                 }
 
                 if (themeConfig.useCustomAccent) {
@@ -974,6 +1323,18 @@ fun ThemeCustomizerScreenContent(
                 )
 
                 Text(
+                    text = "Neon Rim Thickness: ${"%.1f".format(themeConfig.neonBorderWidthDp)} dp",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White
+                )
+                Slider(
+                    value = themeConfig.neonBorderWidthDp,
+                    onValueChange = { w -> onUpdateTheme { it.copy(neonBorderWidthDp = w) } },
+                    valueRange = 0.5f..3.5f,
+                    modifier = Modifier.testTag("neon_border_width_slider")
+                )
+
+                Text(
                     text = "HUD & Card Border Radius: ${themeConfig.hudCornerRadiusDp.toInt()} dp",
                     style = MaterialTheme.typography.labelLarge,
                     color = Color.White
@@ -983,6 +1344,18 @@ fun ThemeCustomizerScreenContent(
                     onValueChange = { r -> onUpdateTheme { it.copy(hudCornerRadiusDp = r) } },
                     valueRange = 4f..32f,
                     modifier = Modifier.testTag("hud_corner_radius_slider")
+                )
+
+                Text(
+                    text = "Surface Glass Opacity: ${(themeConfig.surfaceOpacity * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White
+                )
+                Slider(
+                    value = themeConfig.surfaceOpacity,
+                    onValueChange = { op -> onUpdateTheme { it.copy(surfaceOpacity = op) } },
+                    valueRange = 0.40f..0.98f,
+                    modifier = Modifier.testTag("surface_opacity_slider")
                 )
 
                 Text(
@@ -1002,7 +1375,40 @@ fun ThemeCustomizerScreenContent(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Dragon-Scale Geometric Accent Motif", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("True OLED Pitch-Black Mode", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        Text("Pure #000000 background for AMOLED contrast & battery saving", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = themeConfig.useTrueOledBlack,
+                        onCheckedChange = { oled -> onUpdateTheme { it.copy(useTrueOledBlack = oled) } }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Dual-Tone Ambient Neon Aura", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        Text("Secondary radial glow accents on elevated HUD & notification decks", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = themeConfig.enableAnimatedAura,
+                        onCheckedChange = { aura -> onUpdateTheme { it.copy(enableAnimatedAura = aura) } }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Dragon-Scale Geometric Accent Motif", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        Text("Subtle dragon-scale mesh overlay on headers & player decks", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                    }
                     Switch(
                         checked = themeConfig.showDragonScalePattern,
                         onCheckedChange = { show -> onUpdateTheme { it.copy(showDragonScalePattern = show) } }

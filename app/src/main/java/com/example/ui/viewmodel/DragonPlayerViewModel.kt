@@ -1,9 +1,11 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
+import android.provider.Settings
 import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -23,12 +25,17 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.example.data.local.DragonDatabase
 import com.example.data.local.PlaylistEntity
+import com.example.data.local.StreamBookmarkEntity
 import com.example.data.local.VideoEntity
 import com.example.data.repository.DragonRepository
 import com.example.domain.model.AspectRatioMode
 import com.example.domain.model.AudioEngineConfig
 import com.example.domain.model.CodecCapabilitySpec
 import com.example.domain.model.DecoderMode
+import com.example.domain.model.FolderSortOption
+import com.example.domain.model.MediaCardSize
+import com.example.domain.model.MediaViewStyle
+import com.example.domain.model.PlayerLoopMode
 import com.example.domain.model.SubtitleCueItem
 import com.example.domain.model.SubtitleStyleConfig
 import com.example.domain.model.VideoFolderSummary
@@ -37,6 +44,8 @@ import com.example.player.DragonAudioProcessorManager
 import com.example.player.DragonPlaybackService
 import com.example.player.StorageScannerHelper
 import com.example.player.SubtitleParserEngine
+import com.example.ui.player.DragonSystemAudioNotificationHelper
+import com.example.ui.theme.DragonNotifPanelStyle
 import com.example.ui.theme.DragonThemeConfig
 import com.example.ui.theme.DragonThemePreset
 import kotlinx.coroutines.delay
@@ -77,18 +86,32 @@ data class PlayerRuntimeState(
     val playbackSpeed: Float = 1.0f,
     val isLongPress2xActive: Boolean = false,
     val speedBeforeLongPress: Float = 1.0f,
+    val loopMode: PlayerLoopMode = PlayerLoopMode.OFF,
+    val loopAbStartMs: Long = 0L,
+    val loopAbEndMs: Long? = null,
     val aspectRatioMode: AspectRatioMode = AspectRatioMode.FIT,
     val zoomScale: Float = 1.0f,
     val panOffsetX: Float = 0f,
     val panOffsetY: Float = 0f,
     val isHudLocked: Boolean = false,
     val isLandscapeFullscreen: Boolean = false,
-    val screenBrightness: Float = 0.80f,
+    val screenBrightness: Float = 0.50f,
+    val isBrightnessOverridden: Boolean = false,
     val activeSubtitleCue: String? = null,
     val isInPipMode: Boolean = false,
     val activePlaylistQueue: List<VideoEntity> = emptyList(),
     val playerErrorText: String? = null
 )
+
+fun readDeviceBrightnessFraction(context: Context): Float {
+    return runCatching {
+        val raw = Settings.System.getInt(
+            context.contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS
+        )
+        (raw / 255f).coerceIn(0.01f, 1.0f)
+    }.getOrDefault(0.50f)
+}
 
 @OptIn(UnstableApi::class)
 class DragonPlayerViewModel(application: Application) : AndroidViewModel(application) {
@@ -114,6 +137,24 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
     private val _sortAscending = MutableStateFlow(false)
     val sortAscending: StateFlow<Boolean> = _sortAscending.asStateFlow()
 
+    private val _libraryViewStyle = MutableStateFlow(MediaViewStyle.DETAILED_LIST)
+    val libraryViewStyle: StateFlow<MediaViewStyle> = _libraryViewStyle.asStateFlow()
+
+    private val _libraryCardSize = MutableStateFlow(MediaCardSize.MEDIUM)
+    val libraryCardSize: StateFlow<MediaCardSize> = _libraryCardSize.asStateFlow()
+
+    private val _folderViewStyle = MutableStateFlow(MediaViewStyle.DETAILED_LIST)
+    val folderViewStyle: StateFlow<MediaViewStyle> = _folderViewStyle.asStateFlow()
+
+    private val _folderCardSize = MutableStateFlow(MediaCardSize.MEDIUM)
+    val folderCardSize: StateFlow<MediaCardSize> = _folderCardSize.asStateFlow()
+
+    private val _folderSortOption = MutableStateFlow(FolderSortOption.VIDEO_COUNT)
+    val folderSortOption: StateFlow<FolderSortOption> = _folderSortOption.asStateFlow()
+
+    private val _folderSortAscending = MutableStateFlow(false)
+    val folderSortAscending: StateFlow<Boolean> = _folderSortAscending.asStateFlow()
+
     private val _selectedCategoryFilter = MutableStateFlow("All")
     val selectedCategoryFilter: StateFlow<String> = _selectedCategoryFilter.asStateFlow()
 
@@ -123,13 +164,28 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
     private val _isVaultUnlocked = MutableStateFlow(false)
     val isVaultUnlocked: StateFlow<Boolean> = _isVaultUnlocked.asStateFlow()
 
+    private val _hasStoragePermission = MutableStateFlow(
+        StorageScannerHelper.hasStoragePermission(application)
+    )
+    val hasStoragePermission: StateFlow<Boolean> = _hasStoragePermission.asStateFlow()
+
+    private val _isScanningStorage = MutableStateFlow(false)
+    val isScanningStorage: StateFlow<Boolean> = _isScanningStorage.asStateFlow()
+
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
     val statusBannerMessage: StateFlow<String?> = _statusBannerMessage.asStateFlow()
 
-    private val _playerState = MutableStateFlow(PlayerRuntimeState())
+    private val _playerState = MutableStateFlow(
+        PlayerRuntimeState(
+            screenBrightness = readDeviceBrightnessFraction(application),
+            isBrightnessOverridden = false
+        )
+    )
     val playerState: StateFlow<PlayerRuntimeState> = _playerState.asStateFlow()
 
     private var loadedExternalCues: List<SubtitleCueItem> = emptyList()
+    private var notifAnimPhase: Float = 0f
+    private var notifTickCounter: Int = 0
 
     val themeConfig: StateFlow<DragonThemeConfig> = repository.themeConfigFlow.stateIn(
         viewModelScope,
@@ -188,6 +244,18 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         emptyList()
     )
 
+    val savedNetworkStreams: StateFlow<List<VideoEntity>> = repository.networkStreamsFlow.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyList()
+    )
+
+    val streamBookmarks: StateFlow<List<StreamBookmarkEntity>> = repository.streamBookmarksFlow.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyList()
+    )
+
     val filteredVideos: StateFlow<List<VideoEntity>> = combine(
         repository.publicVideosFlow,
         _searchQuery,
@@ -225,9 +293,14 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         if (asc) sorted else sorted.reversed()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val folderSummaries: StateFlow<List<VideoFolderSummary>> = repository.publicVideosFlow.combine(_searchQuery) { videos, query ->
+    val folderSummaries: StateFlow<List<VideoFolderSummary>> = combine(
+        repository.publicVideosFlow,
+        _searchQuery,
+        _folderSortOption,
+        _folderSortAscending
+    ) { videos, query, sortOpt, asc ->
         val q = query.trim().lowercase()
-        videos.groupBy { it.folderName }
+        val summaries = videos.groupBy { it.folderName }
             .map { (folderName, items) ->
                 VideoFolderSummary(
                     folderName = folderName,
@@ -235,25 +308,87 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                     videoCount = items.size,
                     totalSizeBytes = items.sumOf { it.sizeBytes },
                     totalDurationMs = items.sumOf { it.durationMs },
-                    previewVideos = items.take(3).map { it.title }
+                    previewVideos = items.take(3).map { it.title },
+                    leadVideo = items.firstOrNull()
                 )
             }
             .filter { q.isEmpty() || it.folderName.lowercase().contains(q) }
-            .sortedByDescending { it.videoCount }
+
+        val sorted = when (sortOpt) {
+            FolderSortOption.VIDEO_COUNT -> summaries.sortedBy { it.videoCount }
+            FolderSortOption.NAME -> summaries.sortedBy { it.folderName.lowercase() }
+            FolderSortOption.TOTAL_SIZE -> summaries.sortedBy { it.totalSizeBytes }
+            FolderSortOption.TOTAL_DURATION -> summaries.sortedBy { it.totalDurationMs }
+        }
+        if (asc) sorted else sorted.reversed()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val codecSpecs: List<CodecCapabilitySpec> = repository.getCodecCapabilitySpecs()
 
     init {
-        // Silently scan real device storage on startup without injecting any sample videos or folders
+        // Silently scan real device storage on startup if permission is already granted
         viewModelScope.launch {
-            val discovered = StorageScannerHelper.scanMediaStoreVideos(getApplication())
-            discovered.forEach { repository.insertOrUpdateVideo(it) }
+            val granted = StorageScannerHelper.hasStoragePermission(getApplication())
+            _hasStoragePermission.value = granted
+            if (granted) {
+                _isScanningStorage.value = true
+                val discovered = StorageScannerHelper.scanMediaStoreVideos(getApplication())
+                discovered.forEach { repository.insertOrUpdateVideo(it) }
+                _isScanningStorage.value = false
+            }
         }
+
+        // Register background BroadcastReceiver listener so clicking buttons in the
+        // Android System Notification Panel executes actions directly WITHOUT opening the app.
+        DragonSystemAudioNotificationHelper.registerActionListener(
+            object : DragonSystemAudioNotificationHelper.BackgroundActionListener {
+                override fun onTogglePlayPause() {
+                    togglePlayPause()
+                    refreshSystemNotificationNow()
+                }
+
+                override fun onSeekRelative(deltaMs: Long) {
+                    seekRelative(deltaMs)
+                    refreshSystemNotificationNow()
+                }
+
+                override fun onSeekFraction(fraction: Float) {
+                    val dur = _playerState.value.durationMs.coerceAtLeast(1L)
+                    seekToPosition((dur * fraction.coerceIn(0f, 1f)).toLong())
+                    refreshSystemNotificationNow()
+                }
+
+                override fun onPlayPrevious() {
+                    playPreviousInQueue(keepInBackgroundIfClosed = true)
+                    refreshSystemNotificationNow()
+                }
+
+                override fun onPlayNext() {
+                    playNextInQueue(keepInBackgroundIfClosed = true)
+                    refreshSystemNotificationNow()
+                }
+
+                override fun onCycleStyle() {
+                    val styles = DragonNotifPanelStyle.entries
+                    val current = themeConfig.value.notifPanelStyle
+                    val next = styles[(styles.indexOf(current) + 1) % styles.size]
+                    updateTheme { it.copy(notifPanelStyle = next) }
+                    viewModelScope.launch {
+                        delay(60L)
+                        refreshSystemNotificationNow()
+                    }
+                }
+
+                override fun onStopBackgroundAudio() {
+                    stopBackgroundAudioSession()
+                }
+            }
+        )
 
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _playerState.update { it.copy(isPlaying = isPlaying) }
+                refreshSystemNotificationNow()
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -266,7 +401,10 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 }
                 if (playbackState == Player.STATE_READY) {
                     audioProcessor.attachToPlayer(exoPlayer, audioConfig.value)
+                } else if (playbackState == Player.STATE_ENDED) {
+                    handlePlaybackEndedForLoopMode()
                 }
+                refreshSystemNotificationNow()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -278,16 +416,29 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             }
         })
 
-        // Continuous position & subtitle cue synchronization ticker (every 120ms)
+        // Continuous position, A-B loop check, subtitle cue & live notification ticker (every 120ms)
+        // Active whenever a video is loaded in foreground or in background
         viewModelScope.launch {
             while (isActive) {
-                val activeVideo = _playerState.value.activeVideo
-                if (activeVideo != null && _playerState.value.isPlayerOverlayOpen) {
-                    val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                val state = _playerState.value
+                val activeVideo = state.activeVideo
+                if (activeVideo != null) {
+                    var pos = exoPlayer.currentPosition.coerceAtLeast(0L)
                     val dur = exoPlayer.duration.takeIf { it > 0L } ?: activeVideo.durationMs.coerceAtLeast(1L)
+
+                    // Enforce A-B Segment Loop if active
+                    if (state.loopMode == PlayerLoopMode.AB_REPEAT) {
+                        val abStart = state.loopAbStartMs.coerceIn(0L, (dur - 500L).coerceAtLeast(0L))
+                        val abEnd = state.loopAbEndMs
+                        if (abEnd != null && abEnd > abStart + 300L && pos >= abEnd) {
+                            exoPlayer.seekTo(abStart)
+                            pos = abStart
+                        }
+                    }
+
                     val buffered = exoPlayer.bufferedPercentage.coerceIn(0, 100)
                     val subCfg = subtitleConfig.value
-                    val cue = if (subCfg.enabled) {
+                    val cue = if (state.isPlayerOverlayOpen && subCfg.enabled) {
                         SubtitleParserEngine.resolveCueForPosition(
                             positionMs = pos,
                             syncOffsetMs = subCfg.syncOffsetMs,
@@ -313,6 +464,57 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 }
                 delay(120L)
             }
+        }
+
+        // Fluid, stutter-free Animation Loop for the Notification Panel at the device's default max refresh rate
+        // Runs whenever a video is playing in EITHER foreground or background!
+        viewModelScope.launch {
+            var lastTimeNs = System.nanoTime()
+            val twoPi = (2.0 * Math.PI).toFloat()
+            // Dynamically query the device's maximum hardware refresh rate (e.g., 60Hz, 90Hz, 120Hz, 144Hz)
+            val maxRefreshHz = DragonSystemAudioNotificationHelper.getDeviceMaxRefreshRateHz(getApplication())
+            // Calculate frame delay matching max refresh rate (e.g. 120Hz -> ~8ms, 144Hz -> ~6ms, 90Hz -> ~11ms, 60Hz -> ~16ms)
+            val frameDelayMs = (1000f / maxRefreshHz).toLong().coerceIn(4L, 20L)
+
+            while (isActive) {
+                val state = _playerState.value
+                val isVideoPlaying = state.activeVideo != null && exoPlayer.isPlaying
+
+                val nowNs = System.nanoTime()
+                val dtSec = ((nowNs - lastTimeNs) / 1_000_000_000f).coerceIn(0.002f, 0.05f)
+                lastTimeNs = nowNs
+
+                if (isVideoPlaying) {
+                    notifAnimPhase = (notifAnimPhase + dtSec * 3.4f) % twoPi
+                    refreshSystemNotificationNow()
+                    delay(frameDelayMs)
+                } else {
+                    delay(120L)
+                }
+            }
+        }
+    }
+
+    /**
+     * Shows or updates the custom Notification Panel every time a video is active
+     * in either the foreground player or background playback mode.
+     */
+    fun refreshSystemNotificationNow() {
+        val state = _playerState.value
+        val activeVideo = state.activeVideo
+        if (activeVideo != null) {
+            DragonSystemAudioNotificationHelper.showOrUpdateBackgroundNotification(
+                context = getApplication(),
+                video = activeVideo,
+                isPlaying = exoPlayer.isPlaying,
+                currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(state.currentPositionMs),
+                durationMs = (exoPlayer.duration.takeIf { it > 0L } ?: state.durationMs).coerceAtLeast(1L),
+                volumeBoostPercent = audioConfig.value.volumeBoostPercent,
+                themeConfig = themeConfig.value,
+                animPhase = notifAnimPhase
+            )
+        } else {
+            DragonSystemAudioNotificationHelper.cancelBackgroundNotification(getApplication())
         }
     }
 
@@ -367,6 +569,31 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    fun setLibraryViewStyle(style: MediaViewStyle) {
+        _libraryViewStyle.value = style
+    }
+
+    fun setLibraryCardSize(size: MediaCardSize) {
+        _libraryCardSize.value = size
+    }
+
+    fun setFolderViewStyle(style: MediaViewStyle) {
+        _folderViewStyle.value = style
+    }
+
+    fun setFolderCardSize(size: MediaCardSize) {
+        _folderCardSize.value = size
+    }
+
+    fun setFolderSortOption(option: FolderSortOption) {
+        if (_folderSortOption.value == option) {
+            _folderSortAscending.update { !it }
+        } else {
+            _folderSortOption.value = option
+            _folderSortAscending.value = option == FolderSortOption.NAME
+        }
+    }
+
     fun setCategoryFilter(category: String) {
         _selectedCategoryFilter.value = category
     }
@@ -392,7 +619,36 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         _statusBannerMessage.value = null
     }
 
+    /**
+     * Reopens the fullscreen video player overlay when a video is already active in background audio mode,
+     * continuing playback seamlessly from the exact current position without restarting.
+     */
+    fun resumePlayerOverlayFromBackground() {
+        val currentActive = _playerState.value.activeVideo ?: return
+        val livePos = exoPlayer.currentPosition.coerceAtLeast(_playerState.value.currentPositionMs)
+        val deviceBrightness = readDeviceBrightnessFraction(getApplication())
+        _playerState.update {
+            it.copy(
+                activeVideo = currentActive.copy(lastPositionMs = livePos),
+                isPlayerOverlayOpen = true,
+                currentPositionMs = livePos,
+                screenBrightness = if (it.isBrightnessOverridden) it.screenBrightness else deviceBrightness
+            )
+        }
+        if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_ENDED) {
+            exoPlayer.play()
+        }
+    }
+
     fun playVideo(video: VideoEntity, queue: List<VideoEntity> = emptyList(), startFromBeginning: Boolean = false) {
+        val currentActive = _playerState.value.activeVideo
+        // If this exact video is already loaded in ExoPlayer (e.g. playing in background audio mode),
+        // simply reopen the player overlay and continue seamlessly without resetting MediaItem!
+        if (!startFromBeginning && currentActive != null && currentActive.id == video.id && exoPlayer.mediaItemCount > 0) {
+            resumePlayerOverlayFromBackground()
+            return
+        }
+
         val effectiveQueue = if (queue.isEmpty()) filteredVideos.value.ifEmpty { listOf(video) } else queue
         val resumePos = if (startFromBeginning || video.lastPositionMs >= video.durationMs - 3000L) 0L else video.lastPositionMs
 
@@ -405,9 +661,11 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             loadedExternalCues = emptyList()
         }
 
+        val deviceBrightness = readDeviceBrightnessFraction(getApplication())
+
         _playerState.update {
             it.copy(
-                activeVideo = video,
+                activeVideo = video.copy(lastPositionMs = resumePos),
                 isPlayerOverlayOpen = true,
                 currentPositionMs = resumePos,
                 durationMs = video.durationMs.coerceAtLeast(1L),
@@ -415,7 +673,9 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 playerErrorText = null,
                 zoomScale = 1f,
                 panOffsetX = 0f,
-                panOffsetY = 0f
+                panOffsetY = 0f,
+                screenBrightness = deviceBrightness,
+                isBrightnessOverridden = false
             )
         }
 
@@ -432,6 +692,7 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 .build()
 
             exoPlayer.setMediaItem(mediaItem, resumePos)
+            applyLoopModeToExoPlayer(_playerState.value.loopMode, effectiveQueue.size)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
             exoPlayer.setPlaybackSpeed(_playerState.value.playbackSpeed)
@@ -442,11 +703,18 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
-        if (backgroundAudioEnabled.value) {
-            runCatching {
-                val app = getApplication<Application>()
-                app.startService(Intent(app, DragonPlaybackService::class.java))
-            }
+        // Immediately display the Notification Panel for foreground & background playback
+        refreshSystemNotificationNow()
+
+        // Pre-cache the actual video frame thumbnail in memory and refresh notification bitmap
+        viewModelScope.launch {
+            StorageScannerHelper.loadVideoThumbnailBitmap(getApplication(), video)
+            refreshSystemNotificationNow()
+        }
+
+        runCatching {
+            val app = getApplication<Application>()
+            app.startService(Intent(app, DragonPlaybackService::class.java))
         }
     }
 
@@ -459,6 +727,7 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             }
             exoPlayer.play()
         }
+        refreshSystemNotificationNow()
     }
 
     fun closePlayerOverlay() {
@@ -469,16 +738,52 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
                 repository.updateResumePosition(currentVideo.id, pos)
             }
         }
-        if (!backgroundAudioEnabled.value) {
+        val keepBgAudio = backgroundAudioEnabled.value
+        if (!keepBgAudio) {
             exoPlayer.pause()
         }
+        val deviceBrightness = readDeviceBrightnessFraction(getApplication())
         _playerState.update {
             it.copy(
+                activeVideo = it.activeVideo?.copy(lastPositionMs = pos),
+                currentPositionMs = pos,
                 isPlayerOverlayOpen = false,
                 isLongPress2xActive = false,
+                isLandscapeFullscreen = false,
+                screenBrightness = deviceBrightness,
+                isBrightnessOverridden = false
+            )
+        }
+        refreshSystemNotificationNow()
+    }
+
+    fun stopBackgroundAudioSession() {
+        val currentVideo = _playerState.value.activeVideo
+        val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+        if (currentVideo != null && pos > 0L) {
+            viewModelScope.launch {
+                repository.updateResumePosition(currentVideo.id, pos)
+            }
+        }
+        exoPlayer.pause()
+        exoPlayer.stop()
+        DragonSystemAudioNotificationHelper.cancelBackgroundNotification(getApplication())
+        _playerState.update {
+            it.copy(
+                activeVideo = null,
+                isPlayerOverlayOpen = false,
+                isPlaying = false,
                 isLandscapeFullscreen = false
             )
         }
+    }
+
+    fun cycleNotificationPanelStyle() {
+        val styles = DragonNotifPanelStyle.entries
+        val current = themeConfig.value.notifPanelStyle
+        val next = styles[(styles.indexOf(current) + 1) % styles.size]
+        updateTheme { it.copy(notifPanelStyle = next) }
+        showBannerMessage("Notification Deck Style: ${next.label}")
     }
 
     fun toggleLandscapeFullscreen() {
@@ -539,6 +844,133 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    private fun applyLoopModeToExoPlayer(mode: PlayerLoopMode, queueSize: Int = _playerState.value.activePlaylistQueue.size) {
+        exoPlayer.repeatMode = when (mode) {
+            PlayerLoopMode.LOOP_ONE, PlayerLoopMode.AB_REPEAT -> Player.REPEAT_MODE_ONE
+            PlayerLoopMode.LOOP_ALL -> if (queueSize <= 1) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            PlayerLoopMode.SHUFFLE_LOOP, PlayerLoopMode.OFF -> Player.REPEAT_MODE_OFF
+        }
+    }
+
+    private fun handlePlaybackEndedForLoopMode() {
+        val state = _playerState.value
+        when (state.loopMode) {
+            PlayerLoopMode.LOOP_ONE -> {
+                exoPlayer.seekTo(0L)
+                exoPlayer.play()
+            }
+            PlayerLoopMode.LOOP_ALL -> {
+                if (state.activePlaylistQueue.size > 1) {
+                    playNextInQueue(keepInBackgroundIfClosed = true)
+                } else {
+                    exoPlayer.seekTo(0L)
+                    exoPlayer.play()
+                }
+            }
+            PlayerLoopMode.SHUFFLE_LOOP -> {
+                val queue = state.activePlaylistQueue
+                if (queue.size > 1) {
+                    val currentId = state.activeVideo?.id
+                    val candidates = queue.filter { it.id != currentId }.ifEmpty { queue }
+                    val randomNext = candidates.random()
+                    val wasClosed = !state.isPlayerOverlayOpen
+                    playVideo(randomNext, queue, startFromBeginning = true)
+                    if (wasClosed) {
+                        _playerState.update { it.copy(isPlayerOverlayOpen = false) }
+                        refreshSystemNotificationNow()
+                    }
+                } else {
+                    exoPlayer.seekTo(0L)
+                    exoPlayer.play()
+                }
+            }
+            PlayerLoopMode.AB_REPEAT -> {
+                val startMs = state.loopAbStartMs.coerceAtLeast(0L)
+                exoPlayer.seekTo(startMs)
+                exoPlayer.play()
+            }
+            PlayerLoopMode.OFF -> Unit
+        }
+    }
+
+    fun setLoopMode(mode: PlayerLoopMode) {
+        val dur = _playerState.value.durationMs.coerceAtLeast(1000L)
+        val pos = exoPlayer.currentPosition.coerceIn(0L, (dur - 500L).coerceAtLeast(0L))
+        _playerState.update { state ->
+            val abStart = if (mode == PlayerLoopMode.AB_REPEAT && state.loopAbEndMs == null) {
+                pos
+            } else {
+                state.loopAbStartMs
+            }
+            val abEnd = if (mode == PlayerLoopMode.AB_REPEAT && state.loopAbEndMs == null) {
+                (pos + 15_000L).coerceAtMost(dur).let { if (it <= abStart + 500L) dur else it }
+            } else {
+                state.loopAbEndMs
+            }
+            state.copy(
+                loopMode = mode,
+                loopAbStartMs = abStart,
+                loopAbEndMs = abEnd
+            )
+        }
+        applyLoopModeToExoPlayer(mode)
+        showBannerMessage("Loop Mode: ${mode.label} (${mode.shortBadge})")
+    }
+
+    fun cycleLoopMode() {
+        val modes = PlayerLoopMode.entries
+        val current = _playerState.value.loopMode
+        val next = modes[(modes.indexOf(current) + 1) % modes.size]
+        setLoopMode(next)
+    }
+
+    fun setAbLoopPointA(positionMs: Long = exoPlayer.currentPosition) {
+        val dur = _playerState.value.durationMs.coerceAtLeast(1000L)
+        val clampedA = positionMs.coerceIn(0L, (dur - 1000L).coerceAtLeast(0L))
+        _playerState.update { state ->
+            val currentB = state.loopAbEndMs
+            val effectiveB = if (currentB == null || currentB <= clampedA + 500L) {
+                (clampedA + 15_000L).coerceAtMost(dur)
+            } else {
+                currentB
+            }
+            state.copy(
+                loopMode = PlayerLoopMode.AB_REPEAT,
+                loopAbStartMs = clampedA,
+                loopAbEndMs = effectiveB
+            )
+        }
+        applyLoopModeToExoPlayer(PlayerLoopMode.AB_REPEAT)
+        showBannerMessage("Loop Point A set at ${StorageScannerHelper.formatDurationMs(clampedA)}")
+    }
+
+    fun setAbLoopPointB(positionMs: Long = exoPlayer.currentPosition) {
+        val dur = _playerState.value.durationMs.coerceAtLeast(1000L)
+        val startA = _playerState.value.loopAbStartMs.coerceIn(0L, (dur - 1000L).coerceAtLeast(0L))
+        val clampedB = positionMs.coerceIn(startA + 500L, dur)
+        _playerState.update { state ->
+            state.copy(
+                loopMode = PlayerLoopMode.AB_REPEAT,
+                loopAbStartMs = startA,
+                loopAbEndMs = clampedB
+            )
+        }
+        applyLoopModeToExoPlayer(PlayerLoopMode.AB_REPEAT)
+        showBannerMessage("Loop Point B set at ${StorageScannerHelper.formatDurationMs(clampedB)}")
+    }
+
+    fun clearAbLoopPoints() {
+        _playerState.update { state ->
+            state.copy(
+                loopMode = if (state.loopMode == PlayerLoopMode.AB_REPEAT) PlayerLoopMode.OFF else state.loopMode,
+                loopAbStartMs = 0L,
+                loopAbEndMs = null
+            )
+        }
+        applyLoopModeToExoPlayer(_playerState.value.loopMode)
+        showBannerMessage("A–B Loop segment cleared")
+    }
+
     fun cycleAspectRatio() {
         val modes = AspectRatioMode.entries
         val nextIndex = (modes.indexOf(_playerState.value.aspectRatioMode) + 1) % modes.size
@@ -565,23 +997,48 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         _playerState.update { it.copy(isHudLocked = !it.isHudLocked) }
     }
 
-    fun updateScreenBrightness(newBrightness: Float) {
-        _playerState.update { it.copy(screenBrightness = newBrightness.coerceIn(0.05f, 1.0f)) }
+    fun syncBrightnessWithDevice() {
+        val deviceBrightness = readDeviceBrightnessFraction(getApplication())
+        _playerState.update {
+            if (it.isPlayerOverlayOpen && it.isBrightnessOverridden) {
+                it
+            } else {
+                it.copy(
+                    screenBrightness = deviceBrightness,
+                    isBrightnessOverridden = false
+                )
+            }
+        }
     }
 
-    fun playNextInQueue() {
+    fun updateScreenBrightness(newBrightness: Float) {
+        _playerState.update {
+            it.copy(
+                screenBrightness = newBrightness.coerceIn(0.01f, 1.0f),
+                isBrightnessOverridden = true
+            )
+        }
+    }
+
+    fun playNextInQueue(keepInBackgroundIfClosed: Boolean = false) {
         val state = _playerState.value
         val current = state.activeVideo ?: return
+        val wasOverlayClosed = !state.isPlayerOverlayOpen && keepInBackgroundIfClosed
         val queue = state.activePlaylistQueue
         if (queue.size <= 1) return
         val idx = queue.indexOfFirst { it.id == current.id }
         val nextVideo = queue[(idx + 1).coerceAtLeast(0) % queue.size]
         playVideo(nextVideo, queue, startFromBeginning = true)
+        if (wasOverlayClosed) {
+            _playerState.update { it.copy(isPlayerOverlayOpen = false) }
+            refreshSystemNotificationNow()
+        }
     }
 
-    fun playPreviousInQueue() {
+    fun playPreviousInQueue(keepInBackgroundIfClosed: Boolean = false) {
         val state = _playerState.value
         val current = state.activeVideo ?: return
+        val wasOverlayClosed = !state.isPlayerOverlayOpen && keepInBackgroundIfClosed
         val queue = state.activePlaylistQueue
         if (queue.size <= 1) {
             seekToPosition(0L)
@@ -590,6 +1047,10 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         val idx = queue.indexOfFirst { it.id == current.id }
         val prevIdx = if (idx <= 0) queue.lastIndex else idx - 1
         playVideo(queue[prevIdx], queue, startFromBeginning = true)
+        if (wasOverlayClosed) {
+            _playerState.update { it.copy(isPlayerOverlayOpen = false) }
+            refreshSystemNotificationNow()
+        }
     }
 
     fun captureCurrentFrameToGallery() {
@@ -647,16 +1108,38 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
         updateAudioEngine { it.copy(volumeBoostPercent = clamped) }
     }
 
-    // Storage Scanning & File Picker Actions
-    fun scanDeviceStorage() {
+    // Storage Scanning, Runtime Permission & File Picker Actions
+    fun refreshStoragePermissionState() {
+        val granted = StorageScannerHelper.hasStoragePermission(getApplication())
+        _hasStoragePermission.value = granted
+    }
+
+    fun onStoragePermissionsResult(results: Map<String, Boolean>) {
+        val granted = StorageScannerHelper.hasStoragePermission(getApplication()) ||
+            results.values.any { it }
+        _hasStoragePermission.value = granted
+        if (granted) {
+            scanDeviceStorage(fromPermissionGrant = true)
+        } else {
+            showBannerMessage("Allow Storage Permission anytime to auto-import all local videos")
+        }
+    }
+
+    fun scanDeviceStorage(fromPermissionGrant: Boolean = false) {
         viewModelScope.launch {
+            _isScanningStorage.value = true
+            _hasStoragePermission.value = StorageScannerHelper.hasStoragePermission(getApplication())
             val discovered = StorageScannerHelper.scanMediaStoreVideos(getApplication())
             discovered.forEach { repository.insertOrUpdateVideo(it) }
+            _isScanningStorage.value = false
             showBannerMessage(
-                if (discovered.isNotEmpty()) {
-                    "Indexed ${discovered.size} video files from device storage"
-                } else {
-                    "No videos found in MediaStore • Use 'Open Video' or 'Mount Folder' to add files"
+                when {
+                    discovered.isNotEmpty() ->
+                        "Auto-imported ${discovered.size} local video file(s) from device storage"
+                    fromPermissionGrant ->
+                        "Storage permission granted • Ready to import or open local video files"
+                    else ->
+                        "No videos found in MediaStore • Use 'Open Video' or 'Mount Folder' to add files"
                 }
             )
         }
@@ -721,6 +1204,62 @@ class DragonPlayerViewModel(application: Application) : AndroidViewModel(applica
             val id = repository.insertOrUpdateVideo(entity)
             playVideo(entity.copy(id = id))
         }
+    }
+
+    fun resetRecentNetworkStreams() {
+        if (_playerState.value.activeVideo?.isNetworkStream == true) {
+            exoPlayer.stop()
+            _playerState.update {
+                it.copy(
+                    activeVideo = null,
+                    isPlayerOverlayOpen = false,
+                    isPlaying = false,
+                    isLandscapeFullscreen = false
+                )
+            }
+        }
+        viewModelScope.launch {
+            repository.clearAllNetworkStreams()
+            showBannerMessage("Recent network streams reset")
+        }
+    }
+
+    fun removeSingleNetworkStream(streamVideo: VideoEntity) {
+        if (_playerState.value.activeVideo?.id == streamVideo.id) {
+            exoPlayer.stop()
+            _playerState.update {
+                it.copy(
+                    activeVideo = null,
+                    isPlayerOverlayOpen = false,
+                    isPlaying = false,
+                    isLandscapeFullscreen = false
+                )
+            }
+        }
+        viewModelScope.launch {
+            repository.deleteVideoForever(streamVideo.id)
+            showBannerMessage("Removed stream '${streamVideo.title}'")
+        }
+    }
+
+    fun saveStreamBookmark(title: String, url: String, protocol: String) {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isEmpty()) return
+        viewModelScope.launch {
+            repository.saveStreamBookmark(title, cleanUrl, protocol)
+            showBannerMessage("Bookmarked stream link: ${title.ifBlank { cleanUrl.take(28) }}")
+        }
+    }
+
+    fun removeStreamBookmark(bookmark: StreamBookmarkEntity) {
+        viewModelScope.launch {
+            repository.removeStreamBookmark(bookmark.id)
+            showBannerMessage("Removed bookmark '${bookmark.title}'")
+        }
+    }
+
+    fun playBookmarkedStream(bookmark: StreamBookmarkEntity) {
+        addAndPlayNetworkStream(bookmark.title, bookmark.url, bookmark.protocol)
     }
 
     // Trash Bin & Permanent Delete Actions

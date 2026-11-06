@@ -1,10 +1,12 @@
 package com.example.player
 
+import android.Manifest
 import android.app.RecoverableSecurityException
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.IntentSender
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.LinearGradient
@@ -19,6 +21,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.LruCache
 import android.util.Size
+import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import com.example.data.local.VideoEntity
 import java.io.File
@@ -39,6 +42,66 @@ object StorageScannerHelper {
     )
 
     private val thumbnailCache = object : LruCache<String, Bitmap>(60) {}
+
+    /**
+     * Returns the runtime storage/media permissions appropriate for the device's Android version
+     * so local videos can be scanned and imported on first launch.
+     */
+    fun getRequiredStoragePermissions(): Array<String> {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> arrayOf(
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            )
+            else -> arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+        }
+    }
+
+    /**
+     * Checks whether the app currently holds video/storage read permission.
+     */
+    fun hasStoragePermission(context: Context): Boolean {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.READ_MEDIA_VIDEO
+                ) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+                    ) == PackageManager.PERMISSION_GRANTED
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.READ_MEDIA_VIDEO
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+            else -> {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+    }
+
+    fun getCachedVideoThumbnail(video: VideoEntity): Bitmap? {
+        val cacheKey = "${video.uri}_${video.id}"
+        return thumbnailCache.get(cacheKey)?.takeIf { !it.isRecycled }
+    }
 
     /**
      * Loads the actual recognizable video frame thumbnail for a local or remote video URI.
@@ -105,7 +168,7 @@ object StorageScannerHelper {
     }
 
     suspend fun scanMediaStoreVideos(context: Context): List<VideoEntity> = withContext(Dispatchers.IO) {
-        val discovered = mutableListOf<VideoEntity>()
+        val discoveredByUri = LinkedHashMap<String, VideoEntity>()
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
@@ -118,37 +181,46 @@ object StorageScannerHelper {
             MediaStore.Video.Media.MIME_TYPE
         )
 
-        runCatching {
-            context.contentResolver.query(
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                null,
-                null,
-                "${MediaStore.Video.Media.DATE_ADDED} DESC"
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
-                val folderCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+        val queryUris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            listOf(
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            ).distinct()
+        } else {
+            listOf(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+        }
 
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val displayName = cursor.getString(nameCol) ?: "Video_$id.mp4"
-                    val duration = cursor.getLong(durCol).coerceAtLeast(1_000L)
-                    val size = cursor.getLong(sizeCol).coerceAtLeast(1024L)
-                    val dateAdded = cursor.getLong(dateCol)
-                    val width = cursor.getInt(widthCol).takeIf { it > 0 } ?: 1920
-                    val height = cursor.getInt(heightCol).takeIf { it > 0 } ?: 1080
-                    val folder = cursor.getString(folderCol) ?: "Internal Storage"
-                    val contentUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-                    val ext = displayName.substringAfterLast('.', "MP4").uppercase()
+        for (collectionUri in queryUris) {
+            runCatching {
+                context.contentResolver.query(
+                    collectionUri,
+                    projection,
+                    null,
+                    null,
+                    "${MediaStore.Video.Media.DATE_ADDED} DESC"
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                    val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+                    val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+                    val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+                    val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
+                    val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
+                    val folderCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
 
-                    discovered.add(
-                        VideoEntity(
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idCol)
+                        val displayName = cursor.getString(nameCol) ?: "Video_$id.mp4"
+                        val duration = cursor.getLong(durCol).coerceAtLeast(1_000L)
+                        val size = cursor.getLong(sizeCol).coerceAtLeast(1024L)
+                        val dateAdded = cursor.getLong(dateCol)
+                        val width = cursor.getInt(widthCol).takeIf { it > 0 } ?: 1920
+                        val height = cursor.getInt(heightCol).takeIf { it > 0 } ?: 1080
+                        val folder = cursor.getString(folderCol) ?: "Internal Storage"
+                        val contentUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                        val ext = displayName.substringAfterLast('.', "MP4").uppercase()
+
+                        val entity = VideoEntity(
                             title = displayName.substringBeforeLast('.'),
                             uri = contentUri.toString(),
                             folderName = folder,
@@ -163,11 +235,63 @@ object StorageScannerHelper {
                             frameRate = 60f,
                             bitrateKbps = ((size * 8) / (duration.coerceAtLeast(1000L))).toInt().coerceIn(2500, 45000)
                         )
-                    )
+                        discoveredByUri.putIfAbsent(entity.uri, entity)
+                    }
                 }
             }
         }
-        discovered
+
+        // Supplemental direct directory scan for common media folders (Movies, Download, DCIM, Video)
+        // in case local files were recently copied and not yet indexed by MediaStore
+        val standardDirs = listOfNotNull(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+        )
+        val existingTitlesAndSizes = discoveredByUri.values.map { "${it.title.lowercase()}_${it.sizeBytes}" }.toHashSet()
+
+        fun scanDirectFolder(dir: File, depth: Int) {
+            if (depth > 2 || !dir.exists() || !dir.canRead()) return
+            val children = dir.listFiles() ?: return
+            for (child in children) {
+                if (child.isDirectory && !child.name.startsWith(".")) {
+                    scanDirectFolder(child, depth + 1)
+                } else if (child.isFile && child.length() > 1024L) {
+                    val ext = child.extension.lowercase()
+                    if (ext in SUPPORTED_VIDEO_EXTENSIONS) {
+                        val title = child.nameWithoutExtension
+                        val signature = "${title.lowercase()}_${child.length()}"
+                        if (signature !in existingTitlesAndSizes) {
+                            val fileUri = Uri.fromFile(child).toString()
+                            val extUpper = ext.uppercase()
+                            val entity = VideoEntity(
+                                title = title,
+                                uri = fileUri,
+                                folderName = child.parentFile?.name ?: "Internal Storage",
+                                durationMs = 60_000L,
+                                sizeBytes = child.length(),
+                                dateAddedEpochSec = child.lastModified() / 1000L,
+                                width = 1920,
+                                height = 1080,
+                                containerFormat = extUpper,
+                                videoCodec = inferVideoCodec(extUpper, 1920),
+                                audioCodec = inferAudioCodec(extUpper),
+                                frameRate = 60f,
+                                bitrateKbps = 8500
+                            )
+                            discoveredByUri.putIfAbsent(fileUri, entity)
+                            existingTitlesAndSizes.add(signature)
+                        }
+                    }
+                }
+            }
+        }
+
+        standardDirs.forEach { dir ->
+            runCatching { scanDirectFolder(dir, 0) }
+        }
+
+        discoveredByUri.values.toList()
     }
 
     suspend fun scanSafFolderTree(context: Context, treeUri: Uri): List<VideoEntity> = withContext(Dispatchers.IO) {
