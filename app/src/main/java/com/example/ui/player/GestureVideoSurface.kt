@@ -378,6 +378,7 @@ fun GestureVideoSurface(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     useController = false
+                    keepScreenOn = true
                     layoutParams = FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -389,6 +390,7 @@ fun GestureVideoSurface(
                 if (view.player != exoPlayer) {
                     view.player = exoPlayer
                 }
+                view.keepScreenOn = true
                 view.resizeMode = when (aspectRatioMode) {
                     AspectRatioMode.FIT,
                     AspectRatioMode.FILL_16_9,

@@ -58,6 +58,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -242,6 +243,20 @@ fun DragonVideoPlayerRoot(
     val themeConfig by viewModel.themeConfig.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val bannerMessage by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
+
+    // Keep screen awake continuously while video playback overlay is open
+    DisposableEffect(playerState.isPlayerOverlayOpen) {
+        val activity = context as? Activity
+        val window = activity?.window
+        if (playerState.isPlayerOverlayOpen) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     // Apply Landscape Fullscreen rotation & immersive system bars when requested
     LaunchedEffect(playerState.isPlayerOverlayOpen, playerState.isLandscapeFullscreen) {
